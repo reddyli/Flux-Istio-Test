@@ -1,0 +1,85 @@
+# Umbrella values for the "commerce" chart.
+#
+# Two kinds of content go here:
+#
+#   1. global:        keys exposed to EVERY sub-chart as .Values.global.*
+#                     Use sparingly — only for things genuinely shared
+#                     across all services (e.g. environment name, image
+#                     registry prefix). Start empty; promote a key here
+#                     once you've copy-pasted it into >2 sub-charts.
+#
+#   2. <subchart>:    keys that override that one sub-chart's own
+#                     values.yaml defaults. Example:
+#                         order-service:
+#                           replicaCount: 3
+#                     would override the 1 set in
+#                     charts/order-service/values.yaml.
+
+global: {}
+
+# Sub-chart overrides for our first-party services. Defaults in each
+# sub-chart's own values.yaml are fine for now; uncomment when you need
+# to deviate.
+#
+# order-service:
+#   replicaCount: 2
+#
+# stock-service:
+#   replicaCount: 1
+
+# Bitnami Postgres sub-chart overrides.
+# Keys here mirror the upstream chart's values.yaml structure exactly:
+# https://github.com/bitnami/charts/blob/main/bitnami/postgresql/values.yaml
+postgresql:
+  enabled: true
+
+  # Bitnami's "secure" images now rate-limit anonymous pulls; the
+  # freely-fetchable images live under bitnamilegacy/.
+  image:
+    repository: bitnamilegacy/postgresql
+
+  # The chart will create the postgres superuser with this password.
+  # Plain text is fine for the practice cluster; in real life this
+  # comes from a Secret (auth.existingSecret).
+  auth:
+    postgresPassword: postgres-admin
+
+  # Run an init script once on first boot to create the two databases
+  # and their owners. Bitnami mounts anything under primary.initdb.scripts
+  # into /docker-entrypoint-initdb.d/.
+  primary:
+    initdb:
+      scripts:
+        init.sql: |
+          CREATE USER orders WITH PASSWORD 'orders';
+          CREATE DATABASE orders OWNER orders;
+          CREATE USER stock  WITH PASSWORD 'stock';
+          CREATE DATABASE stock  OWNER stock;
+
+# Bitnami Redis sub-chart overrides.
+# https://github.com/bitnami/charts/blob/main/bitnami/redis/values.yaml
+redis:
+  enabled: true
+
+  # Same secure-image workaround as postgres.
+  image:
+    repository: bitnamilegacy/redis
+
+  # Single pod; no replication or sentinel.
+  architecture: standalone
+
+  # Apps don't supply a password and compose ran unauthenticated.
+  auth:
+    enabled: false
+
+  # Cache + idempotency markers can absorb a restart-loss in dev,
+  # matching the --save "" --appendonly no setup in compose.
+  master:
+    persistence:
+      enabled: false
+
+# First-party pulsar sub-chart (standalone). No upstream overrides
+# needed; everything lives in charts/pulsar/values.yaml. Toggle off here
+# to point apps at an external Pulsar cluster instead.
+pulsar:
+  enabled: true

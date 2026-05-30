@@ -1,0 +1,104 @@
+# Default values for the order-service sub-chart.
+# Anything here can be overridden by the umbrella's values.yaml
+# (under an "order-service:" block) or by -f / --set on the CLI.
+
+replicaCount: 1
+
+image:
+  repository: order-service
+  tag: ""                     # empty -> falls back to .Chart.AppVersion in the template
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 8080
+
+# Postgres connection. Static parts live here; the hostname is computed
+# in configmap.yaml (host: "" -> "<release>-postgresql"). Override host
+# to point at an external/managed Postgres.
+# NOTE: password belongs in a Secret, not here. Temporary shortcut for
+# the learning cluster; extracted into a Secret in a later step.
+postgresql:
+  host: ""
+  port: 5432
+  database: orders
+  username: orders
+  password: orders
+
+# stock-service endpoint for the synchronous reserve call.
+# host: "" -> "<release>-stock-service".
+stockService:
+  host: ""
+  port: 8081
+
+# Redis connection. host: "" -> "<release>-redis-master".
+redis:
+  host: ""
+  port: 6379
+
+# Pulsar broker connection. host: "" -> "<release>-pulsar".
+pulsar:
+  host: ""
+  port: 6650
+
+# initContainer that blocks the main container until Postgres, Redis,
+# and Pulsar all accept TCP connections. Without this the JVM starts
+# eagerly, fails to open a JDBC connection or Pulsar listener, and
+# CrashLoopBackOff serves as a crude "wait" mechanism. Disable to skip
+# (e.g. when pointing at always-on external infra).
+waitForDependencies:
+  enabled: true
+  image:
+    repository: busybox
+    tag: "1.37"
+    pullPolicy: IfNotPresent
+  connectTimeoutSeconds: 2     # per nc -w
+  retryIntervalSeconds: 2      # sleep between attempts
+
+# CPU/memory envelope. requests = scheduler reservation; limits = cgroup
+# cap. Heap is sized off limits.memory via -XX:MaxRAMPercentage=75 in the
+# Dockerfile, so bumping limits.memory here also bumps the heap.
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+# Probes hit Spring Boot Actuator's dedicated health groups.
+# startup: covers cold-start (JVM + context). Until it passes, liveness
+#   and readiness are suppressed, so a slow boot can't trip a restart.
+# readiness: gates Service traffic. 503 -> Endpoints drops this pod.
+# liveness: kubelet restarts the pod if it stays unhealthy.
+probes:
+  startup:
+    path: /actuator/health/readiness
+    periodSeconds: 5
+    failureThreshold: 24        # 5s * 24 = 120s budget for cold start
+  readiness:
+    path: /actuator/health/readiness
+    periodSeconds: 5
+    failureThreshold: 3
+  liveness:
+    path: /actuator/health/liveness
+    periodSeconds: 10
+    failureThreshold: 3
+
+# Pod-level: enforce non-root + restricted seccomp. The image's `spring`
+# user is uid 10001; fsGroup matches so any future volumes are writable.
+# Container-level: drop all caps, no privilege escalation, read-only
+# rootfs (paired with an emptyDir mount on /tmp below).
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+  seccompProfile:
+    type: RuntimeDefault
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL

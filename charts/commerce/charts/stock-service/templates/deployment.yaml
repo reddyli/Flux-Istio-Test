@@ -1,0 +1,93 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "stock-service.fullname" . }}
+  labels:
+    {{- include "stock-service.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "stock-service.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "stock-service.selectorLabels" . | nindent 8 }}
+    spec:
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- if .Values.waitForDependencies.enabled }}
+      # Block until every dependency's Service port answers. The pod
+      # stays in Init: status (not CrashLoopBackOff) so probes don't
+      # fire on a doomed JVM and the restart count stays clean.
+      initContainers:
+        - name: wait-for-deps
+          image: "{{ .Values.waitForDependencies.image.repository }}:{{ .Values.waitForDependencies.image.tag }}"
+          imagePullPolicy: {{ .Values.waitForDependencies.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          env:
+            - name: DEPS
+              value: >-
+                {{ .Values.postgresql.host | default (printf "%s-postgresql" .Release.Name) }}:{{ .Values.postgresql.port }}
+                {{ .Values.redis.host | default (printf "%s-redis-master" .Release.Name) }}:{{ .Values.redis.port }}
+                {{ .Values.pulsar.host | default (printf "%s-pulsar" .Release.Name) }}:{{ .Values.pulsar.port }}
+            - name: CONNECT_TIMEOUT
+              value: {{ .Values.waitForDependencies.connectTimeoutSeconds | quote }}
+            - name: RETRY_INTERVAL
+              value: {{ .Values.waitForDependencies.retryIntervalSeconds | quote }}
+          command:
+            - sh
+            - -c
+            - |
+              set -eu
+              for dep in $DEPS; do
+                host="${dep%%:*}"; port="${dep##*:}"
+                echo "[wait-for-deps] probing ${host}:${port}"
+                until nc -z -w "$CONNECT_TIMEOUT" "$host" "$port"; do
+                  sleep "$RETRY_INTERVAL"
+                done
+                echo "[wait-for-deps] ${host}:${port} up"
+              done
+      {{- end }}
+      containers:
+        - name: {{ .Chart.Name }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "stock-service.fullname" . }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.port }}
+              protocol: TCP
+          startupProbe:
+            httpGet:
+              path: {{ .Values.probes.startup.path }}
+              port: http
+            periodSeconds: {{ .Values.probes.startup.periodSeconds }}
+            failureThreshold: {{ .Values.probes.startup.failureThreshold }}
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.probes.readiness.path }}
+              port: http
+            periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
+            failureThreshold: {{ .Values.probes.readiness.failureThreshold }}
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.probes.liveness.path }}
+              port: http
+            periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
+            failureThreshold: {{ .Values.probes.liveness.failureThreshold }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          # readOnlyRootFilesystem blocks Tomcat's work dir + JVM temp files.
+          # Mount a tmpfs at /tmp so the JVM has somewhere to write.
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}

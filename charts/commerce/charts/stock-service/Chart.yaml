@@ -1,0 +1,6 @@
+apiVersion: v2
+name: stock-service
+description: Stock service. Postgres for inventory, Redis read-cache, Pulsar consumer for order.created events.
+type: application
+version: 0.1.0
+appVersion: "0.0.1-SNAPSHOT"

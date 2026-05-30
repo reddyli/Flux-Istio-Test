@@ -1,0 +1,31 @@
+# Version control
+.git
+.gitignore
+.gitattributes
+
+# IDE / editor
+.idea
+.vscode
+*.iml
+*.swp
+
+# Gradle outputs + caches (we always rebuild inside the image)
+**/build/
+**/.gradle/
+.gradle/
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Docs and notes — not needed in the runtime image
+docs/
+*.md
+
+# Local-only infra (mounted via compose, not baked in)
+compose.yaml
+infra/
+
+# Logs / dumps
+*.log
+*.hprof

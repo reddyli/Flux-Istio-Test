@@ -1,0 +1,26 @@
+replicaCount: 1
+
+image:
+  repository: apachepulsar/pulsar
+  tag: ""                     # empty -> falls back to .Chart.AppVersion (4.0.5)
+  pullPolicy: IfNotPresent
+
+# Skips Pulsar Functions worker and BookKeeper stream storage. Same
+# flags compose passes. Cuts ~30s off startup and ~200MB of RAM.
+args:
+  - "bin/pulsar"
+  - "standalone"
+  - "--no-functions-worker"
+  - "--no-stream-storage"
+
+service:
+  type: ClusterIP
+  brokerPort: 6650            # binary protocol (apps connect here)
+  adminPort: 8080             # REST admin API
+
+# Persistent storage for /pulsar/data — BookKeeper ledgers + ZK metadata.
+# Restart-survival; matches the compose pulsar_data volume.
+persistence:
+  enabled: true
+  size: 1Gi
+  storageClassName: ""        # "" -> cluster default storage class

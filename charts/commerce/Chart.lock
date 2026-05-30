@@ -1,0 +1,15 @@
+dependencies:
+- name: order-service
+  repository: file://./charts/order-service
+  version: 0.1.0
+- name: stock-service
+  repository: file://./charts/stock-service
+  version: 0.1.0
+- name: postgresql
+  repository: https://charts.bitnami.com/bitnami
+  version: 16.7.27
+- name: redis
+  repository: https://charts.bitnami.com/bitnami
+  version: 21.2.14
+digest: sha256:2b0bc65f15a4ef69be1ec8011970db8299b3875fd9f3e1e93eda84c334baf01f
+generated: "2026-05-30T13:26:31.082044+05:30"

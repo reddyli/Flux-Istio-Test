@@ -1,0 +1,140 @@
+services:
+  pulsar-manager:
+    image: apachepulsar/pulsar-manager:v0.4.0
+    container_name: pulsar-manager
+    ports:
+      - "9527:9527"     # web UI
+      - "7750:7750"     # backend API
+    depends_on:
+      pulsar:
+        condition: service_healthy
+    environment:
+      SPRING_CONFIGURATION_FILE: /pulsar-manager/pulsar-manager/application.properties
+
+  postgres:
+    image: postgres:16
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infra/postgres-init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  pulsar:
+    image: apachepulsar/pulsar:4.0.5
+    command: ["bin/pulsar", "standalone", "--no-functions-worker", "--no-stream-storage"]
+    ports:
+      - "6650:6650"   # broker binary protocol
+      - "8083:8080"   # admin HTTP (8080 reserved for order-service, 8081 for stock-service)
+    volumes:
+      - pulsar_data:/pulsar/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/admin/v2/clusters || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.76.0
+    ports:
+      - "16686:16686"   # UI
+      - "4317:4317"     # OTLP gRPC ingest
+      - "4318:4318"     # OTLP HTTP ingest
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+
+  redis:
+    image: redis:8.6-alpine
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "128mb", "--maxmemory-policy", "allkeys-lru"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ------------------------------------------------------------------
+  # Application services
+  # ------------------------------------------------------------------
+  # Both services build from this repo. Build context is the repo root
+  # (".") so the multi-module Gradle build can see settings.gradle and
+  # all module sources. Dockerfile path is relative to that context.
+  #
+  # Hostnames inside the compose network: each service is reachable by
+  # its compose service name (postgres, pulsar, redis, jaeger,
+  # stock-service). "localhost" inside a container points at that
+  # container itself, which is why the application.yaml defaults are
+  # overridden here via SPRING_* env vars (Spring's relaxed binding).
+  # ------------------------------------------------------------------
+
+  stock-service:
+    build:
+      context: .
+      dockerfile: modules/stock-service/Dockerfile
+    image: stock-service:dev
+    ports:
+      - "8081:8081"
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/stock
+      SPRING_DATASOURCE_USERNAME: stock
+      SPRING_DATASOURCE_PASSWORD: stock_pw
+      SPRING_PULSAR_CLIENT_SERVICE_URL: pulsar://pulsar:6650
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: "6379"
+      MANAGEMENT_OPENTELEMETRY_TRACING_EXPORT_OTLP_ENDPOINT: http://jaeger:4318/v1/traces
+    depends_on:
+      postgres:
+        condition: service_healthy
+      pulsar:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8081/actuator/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 30s
+
+  order-service:
+    build:
+      context: .
+      dockerfile: modules/order-service/Dockerfile
+    image: order-service:dev
+    ports:
+      - "8080:8080"
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/orders
+      SPRING_DATASOURCE_USERNAME: orders
+      SPRING_DATASOURCE_PASSWORD: orders_pw
+      SPRING_PULSAR_CLIENT_SERVICE_URL: pulsar://pulsar:6650
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: "6379"
+      MANAGEMENT_OPENTELEMETRY_TRACING_EXPORT_OTLP_ENDPOINT: http://jaeger:4318/v1/traces
+      STOCK_SERVICE_URL: http://stock-service:8081
+    depends_on:
+      postgres:
+        condition: service_healthy
+      pulsar:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      stock-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/actuator/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 30s
+
+volumes:
+  postgres_data:
+  pulsar_data:

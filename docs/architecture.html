@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Architecture — Helm / Istio / FluxCD practice</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  :root {
+    --bg: #0f1115; --fg: #e6e6e6; --muted: #9aa0a6;
+    --accent: #7cb7ff; --card: #ffffff; --border: #262a33;
+    --code-bg: #0b0d12;
+  }
+  @media (prefers-color-scheme: light) {
+    :root { --bg:#fafafa; --fg:#1a1a1a; --muted:#555; --accent:#1a66c9;
+            --card:#fff; --border:#e3e3e3; --code-bg:#f2f2f2; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; font:15px/1.55 -apple-system,Segoe UI,Roboto,sans-serif;
+         background:var(--bg); color:var(--fg); }
+  header { padding:28px 32px; border-bottom:1px solid var(--border); }
+  h1 { margin:0 0 4px; font-size:22px; }
+  header p { margin:0; color:var(--muted); }
+  main { max-width: 1100px; margin:0 auto; padding: 24px 32px 80px; }
+  nav { display:flex; gap:10px; flex-wrap:wrap; margin-bottom:24px; }
+  nav a { color:var(--accent); text-decoration:none; padding:6px 10px;
+          border:1px solid var(--border); border-radius:6px; font-size:13px; }
+  section.diagram { background:var(--card); border:1px solid var(--border);
+                    border-radius:10px; padding:20px 24px; margin-bottom:20px; }
+  section.diagram h2 { margin:0 0 4px; font-size:18px; color:#1a1a1a; }
+  section.diagram p.caption { margin:0 0 16px; color:#555; font-size:13px; }
+  .mermaid { overflow-x: auto; }
+  .notes { background:var(--code-bg); border-left:3px solid var(--accent);
+           padding:10px 14px; margin:10px 0; border-radius:4px; font-size:13.5px; }
+  ul { padding-left: 20px; }
+  li { margin: 3px 0; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Architecture</h1>
+  <p>Runtime topology and request flow for the Helm / Istio / FluxCD practice project.</p>
+</header>
+
+<main>
+  <nav>
+    <a href="./learning-log.html">&larr; Learning log</a>
+  </nav>
+
+  <section class="diagram">
+    <h2>1. Cluster topology and GitOps flow</h2>
+    <p class="caption">Single Docker Desktop Kubernetes cluster. Flux is the only component that reads git; everything else is installed by Flux applying manifests and Helm releases. Two app namespaces (<code>app-dev</code>, <code>app-prod</code>) share the same umbrella chart with different values.</p>
+    <div class="mermaid">
+flowchart LR
+    DEV["Developer laptop"]:::dev
+    GIT[("Git repo<br/>istio-flux-helm-practice")]:::git
+    DEV -->|"git push"| GIT
+    subgraph CLUSTER["Docker Desktop Kubernetes (single cluster)"]
+      direction TB
+      subgraph FLUX_NS["flux-system"]
+        FLUX["Flux controllers<br/>(source - kustomize - helm - image-automation)"]:::plat
+      end
+      subgraph ISTIO_NS["istio-system"]
+        ISTIOD["istiod"]:::plat
+        IGW["Ingress Gateway"]:::plat
+      end
+      subgraph OBS_NS["observability"]
+        PROM["Prometheus"]:::obs
+        GRAF["Grafana"]:::obs
+        JAEG["Jaeger"]:::obs
+        KIALI["Kiali"]:::obs
+        LOKI["Loki"]:::obs
+      end
+      subgraph APP_DEV["app-dev namespace"]
+        ORD_D["order-service (v1)"]:::app
+        STK_D["stock-service (v1, v2 canary)"]:::app
+        PG_D[("postgres<br/>DBs: orders, stock")]:::data
+        PUL_D["Pulsar broker"]:::data
+        RED_D[("redis<br/>cache + idempotency")]:::data
+      end
+      subgraph APP_PROD["app-prod namespace"]
+        ORD_P["order-service"]:::app
+        STK_P["stock-service"]:::app
+        PG_P[("postgres<br/>DBs: orders, stock")]:::data
+        PUL_P["Pulsar broker"]:::data
+        RED_P[("redis<br/>cache + idempotency")]:::data
+      end
+    end
+    GIT -.->|"poll & reconcile"| FLUX
+    FLUX -.->|"apply Kustomizations<br/>and HelmReleases"| CLUSTER
+    classDef dev fill:#eceff4,stroke:#6b7684,color:#1a2430
+    classDef git fill:#e3e7ed,stroke:#5b6674,color:#1a2430
+    classDef plat fill:#d6e4f0,stroke:#5b7ea8,color:#16273a
+    classDef obs fill:#e8e0cf,stroke:#9e8a5c,color:#2b2414
+    classDef app fill:#d9e8d2,stroke:#6f9059,color:#1b2a14
+    classDef data fill:#ecd6d6,stroke:#a36b6b,color:#2b1616
+    </div>
+  </section>
+
+  <section class="diagram">
+    <h2>2. POST /orders happy-path flow</h2>
+    <p class="caption">Every service pod has an Envoy sidecar injected by Istio. All hops between services traverse two sidecars — that's where mTLS, authorization policy, retries and traffic-splitting are enforced. Postgres and Pulsar run without sidecars in this project; they are treated as TCP endpoints.</p>
+    <div class="mermaid">
+flowchart LR
+    USER["curl / static UI"]:::user
+    GW["Istio Ingress<br/>Gateway"]:::mesh
+    subgraph POD_ORDER["order-service pod"]
+      ORDER_APP["order-service<br/>(Spring Boot)"]:::app
+      ORDER_SIDE["Envoy<br/>sidecar"]:::mesh
+    end
+    subgraph POD_STOCK["stock-service pod"]
+      STOCK_APP["stock-service<br/>(Spring Boot)"]:::app
+      STOCK_SIDE["Envoy<br/>sidecar"]:::mesh
+    end
+    PG[("Postgres<br/>orders DB | stock DB")]:::data
+    PULSAR["Pulsar<br/>topic: orders.created"]:::data
+    USER -->|"1 POST /orders"| GW
+    GW -->|"2 route to app-dev"| ORDER_SIDE
+    ORDER_SIDE --> ORDER_APP
+    ORDER_APP -->|"3 insert order PENDING"| PG
+    ORDER_APP -->|"4 HTTP POST /reserve"| ORDER_SIDE
+    ORDER_SIDE ==>|"5 mTLS + AuthZ policy"| STOCK_SIDE
+    STOCK_SIDE --> STOCK_APP
+    STOCK_APP -->|"6 UPDATE inventory"| PG
+    STOCK_APP -.->|"7 200 OK or 409"| ORDER_APP
+    ORDER_APP -->|"8 update order CONFIRMED"| PG
+    ORDER_APP -->|"9 publish OrderCreatedEvent"| PULSAR
+    PULSAR -->|"10 consume (async)"| STOCK_APP
+    STOCK_APP -->|"11 insert order_audit row"| PG
+    ORDER_APP -.->|"201 Created"| USER
+    classDef user fill:#eceff4,stroke:#6b7684,color:#1a2430
+    classDef mesh fill:#d6e4f0,stroke:#5b7ea8,color:#16273a
+    classDef app fill:#d9e8d2,stroke:#6f9059,color:#1b2a14
+    classDef data fill:#ecd6d6,stroke:#a36b6b,color:#2b1616
+    </div>
+  </section>
+
+  <section class="diagram">
+    <h2>Locked-in decisions</h2>
+    <div class="notes">
+      <ul>
+        <li>Single Docker Desktop Kubernetes cluster; two app namespaces (<code>app-dev</code>, <code>app-prod</code>).</li>
+        <li>One Postgres pod per namespace, two databases (<code>orders</code>, <code>stock</code>), one user each.</li>
+        <li>One Pulsar broker per namespace, single topic <code>orders.created</code>.</li>
+        <li>One Redis pod per namespace, used by both services as a cache (stock reads) and an idempotency-key store (<code>POST /api/orders</code> with client-supplied <code>Idempotency-Key</code> header). Lettuce client via Spring Data Redis.</li>
+        <li>Two microservices: <code>order-service</code> (HTTP + Pulsar producer + Redis idempotency), <code>stock-service</code> (HTTP + Pulsar consumer + Redis read cache).</li>
+        <li>Observability stack: Prometheus, Grafana, Jaeger, Kiali, Loki (log aggregation, queried from Grafana).</li>
+        <li>Ingress through the Istio Gateway. External auth not in scope.</li>
+        <li>Secrets: Sealed Secrets for Phases 1&ndash;4; HashiCorp Vault as optional Phase 5.</li>
+        <li>UI: single static HTML served from <code>order-service</code>, added in Phase 2 once the gateway is up.</li>
+      </ul>
+    </div>
+  </section>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<script>
+  mermaid.initialize({ startOnLoad: true, theme: 'neutral', securityLevel: 'loose' });
+</script>
+</body>
+</html>

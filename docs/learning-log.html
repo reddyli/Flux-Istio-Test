@@ -1,0 +1,564 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Helm / Istio / FluxCD — Learning Log</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  :root {
+    --bg: #0f1115; --fg: #e6e6e6; --muted: #9aa0a6;
+    --accent: #7cb7ff; --card: #171a21; --border: #262a33;
+    --ok: #7ddf88; --warn: #f1c40f; --code-bg: #0b0d12;
+  }
+  @media (prefers-color-scheme: light) {
+    :root { --bg:#fafafa; --fg:#1a1a1a; --muted:#555; --accent:#1a66c9;
+            --card:#fff; --border:#e3e3e3; --code-bg:#f2f2f2; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; font:15px/1.55 -apple-system,Segoe UI,Roboto,sans-serif;
+         background:var(--bg); color:var(--fg); }
+  header { padding:28px 32px; border-bottom:1px solid var(--border); }
+  h1 { margin:0 0 4px; font-size:22px; }
+  header p { margin:0; color:var(--muted); }
+  main { max-width: 960px; margin:0 auto; padding: 24px 32px 80px; }
+  nav { display:flex; gap:10px; flex-wrap:wrap; margin-bottom:24px; }
+  nav a { color:var(--accent); text-decoration:none; padding:6px 10px;
+          border:1px solid var(--border); border-radius:6px; font-size:13px; }
+  section.phase { background:var(--card); border:1px solid var(--border);
+                  border-radius:10px; padding:20px 24px; margin-bottom:20px; }
+  section.phase h2 { margin:0 0 4px; font-size:18px; }
+  section.phase .goal { color:var(--muted); margin:0 0 16px; font-size:13px; }
+  .step { border-top:1px solid var(--border); padding:16px 0; }
+  .step:first-of-type { border-top:0; padding-top:4px; }
+  .step h3 { margin:0 0 8px; font-size:15px; }
+  .status { font-size:11px; padding:2px 8px; border-radius:10px;
+            border:1px solid var(--border); margin-left:8px; color:var(--muted); }
+  .status.done { color:var(--ok); border-color:var(--ok); }
+  .status.wip  { color:var(--warn); border-color:var(--warn); }
+  code, pre { font-family: ui-monospace, Menlo, Consolas, monospace; }
+  code { background:var(--code-bg); padding:1px 5px; border-radius:4px; font-size:13px; }
+  pre { background:var(--code-bg); padding:12px 14px; border-radius:6px;
+        overflow:auto; font-size:13px; border:1px solid var(--border); }
+  .notes { background:var(--code-bg); border-left:3px solid var(--accent);
+           padding:10px 14px; margin:10px 0; border-radius:4px; font-size:13.5px; }
+  .placeholder { color:var(--muted); font-style:italic; }
+  ul { padding-left: 20px; }
+  li { margin: 3px 0; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Helm / Istio / FluxCD — Learning Log</h1>
+  <p>Hands-on notes, gotchas, and commands collected phase by phase.</p>
+</header>
+
+<main>
+  <nav>
+    <a href="./architecture.html">Architecture &rarr;</a>
+    <a href="#phase-0">Phase 0 — Baseline</a>
+    <a href="#phase-1">Phase 1 — Helm</a>
+    <a href="#phase-2">Phase 2 — Istio</a>
+    <a href="#phase-3">Phase 3 — FluxCD</a>
+    <a href="#phase-4">Phase 4 — Integration</a>
+  </nav>
+
+  <section class="phase" id="phase-0">
+    <h2>Phase 0 — Baseline</h2>
+    <p class="goal">Goal: two Spring Boot microservices (<code>order-service</code>, <code>stock-service</code>) talking through Pulsar and Postgres on a local Docker Desktop Kubernetes cluster. See <a href="./architecture.html">architecture.html</a> for the locked-in topology and request flow.</p>
+
+    <div class="step" id="p0-s1">
+      <h3>Step 1 — Install local tooling <span class="status done">done</span></h3>
+      <p>Core tools (needed from Phase 0):</p>
+      <ul>
+        <li>Docker Desktop with Kubernetes enabled</li>
+        <li><code>kubectl</code></li>
+        <li>JDK 17+ on <code>PATH</code> for Gradle itself (project toolchain is Java 23)</li>
+        <li>Optional: <code>k9s</code>, <code>stern</code></li>
+      </ul>
+      <p>Per-phase CLIs (installed when the phase starts):</p>
+      <ul>
+        <li><code>helm</code> — Phase 1</li>
+        <li><code>istioctl</code> — Phase 2</li>
+        <li><code>flux</code> — Phase 3</li>
+      </ul>
+      <p>Verification commands:</p>
+<pre>docker ps
+kubectl version --client
+kubectl cluster-info              # should hit Docker Desktop's kubernetes
+java -version</pre>
+      <div class="notes"><strong>Notes:</strong> <span class="placeholder">record versions installed, any issues hit, platform (macOS arm64 / x86), and fixes.</span></div>
+    </div>
+
+    <div class="step" id="p0-s2">
+      <h3>Step 2 — Restructure Gradle into multi-module <span class="status done">done</span></h3>
+      <p>Split the project into <code>common</code>, <code>order-service</code>, and <code>stock-service</code>. Kept the on-disk <code>*-service</code> naming instead of the originally-planned <code>svc-*</code>.</p>
+      <p>Actual layout:</p>
+<pre>settings.gradle          -> include 'common', 'order-service', 'stock-service'
+build.gradle             -> root: declares spring-boot + dependency-management plugins
+                            with apply false; applies 'java' + toolchain 23 via subprojects
+modules/common/
+  build.gradle           -> plain java-library
+  src/main/java/li/reddy/common/event/OrderCreatedEvent.java
+modules/order-service/
+  build.gradle           -> java + org.springframework.boot + io.spring.dependency-management
+                            deps: starter-web, project(':common'), starter-test
+  src/main/java/li/reddy/order/OrderApplication.java
+  src/main/resources/application.yaml   (server.port: 8080)
+modules/stock-service/
+  build.gradle           -> same shape as order-service
+  src/main/java/li/reddy/stock/StockApplication.java
+  src/main/resources/application.yaml   (server.port: 8081)</pre>
+      <p>Verification (ran clean):</p>
+<pre>./gradlew projects                        # lists :common, :order-service, :stock-service
+./gradlew build                           # all three modules build, bootJars produced
+./gradlew :stock-service:bootRun          # starts Tomcat 11 on 8081, Spring Boot 4.0.5
+./gradlew :order-service:bootRun          # starts Tomcat 11 on 8080, Spring Boot 4.0.5</pre>
+      <div class="notes"><strong>Notes:</strong>
+        <ul>
+          <li>Spring Boot 4.0.5 pulls Spring Framework 7.0.6, Tomcat 11.0.20, Jackson 3.1.0. Runs fine on Java 23.</li>
+          <li>Plugin versions are declared once in the root with <code>apply false</code>; subprojects apply them without restating versions — keeps <code>dependency-management</code> in sync with the Boot version.</li>
+          <li>Gradle <em>itself</em> needs JDK 17+ to launch; the <code>java.toolchain</code> block only covers compile/test. Shell <code>JAVA_HOME</code> was pointing at JDK 8, so <code>./gradlew</code> failed with "Gradle requires JVM 17 or later". Workaround used: prefix the command with <code>JAVA_HOME=.../openjdk-23.0.1/Contents/Home</code>. Project-local fix (not yet applied): add <code>org.gradle.java.home</code> to a root <code>gradle.properties</code>.</li>
+          <li>Dropped the JUnit-BOM lines from each module's <code>build.gradle</code>; <code>spring-boot-starter-test</code> already brings JUnit 5.</li>
+          <li>Deleted the IntelliJ-generated placeholder <code>li/reddy/Main.java</code> from all three modules.</li>
+        </ul>
+      </div>
+    </div>
+    <div class="step" id="p0-s3">
+      <h3>Step 3 — Implement order-service and stock-service <span class="status done">done</span></h3>
+      <p>Both services end-to-end against real Postgres + Pulsar locally. Stack locked in: <strong>Spring Data JPA</strong> (Hibernate) for persistence, <strong>Spring <code>RestClient</code></strong> for sync HTTP, <strong><code>spring-pulsar</code></strong> for messaging, plain <code>schema.sql</code> for table bootstrap (Flyway deferred), Spring Boot Actuator + structured JSON logging + Micrometer tracing OTel bridge for observability primitives.</p>
+
+      <h4>Step 3.1 — Local infra (docker-compose) <span class="status done">done</span></h4>
+      <ul>
+        <li><code>compose.yaml</code> at repo root: Postgres 16 (port 5432) + Pulsar 4.0.5 standalone (broker 6650, admin remapped to 8083 because 8080–8082 are reserved for the apps and 8085 was taken on host).</li>
+        <li><code>infra/postgres-init.sql</code> mounted into <code>/docker-entrypoint-initdb.d/</code> creates two databases owned by two dedicated users: <code>orders/orders_pw</code> owns DB <code>orders</code>; <code>stock/stock_pw</code> owns DB <code>stock</code>. One Postgres pod, hard isolation per service via grants.</li>
+        <li>Both containers come up healthy; each service user can log into its own DB and only its own DB.</li>
+      </ul>
+      <p><strong>Concepts touched:</strong></p>
+      <ul>
+        <li><em>Database-per-service</em> simulated within a single Postgres instance — each service connects with its own role, so a bug in one service can't accidentally read or write the other's tables. Mirrors what the Bitnami Postgres chart will give us in Phase 1 via its <code>extraInitDbScripts</code> hook.</li>
+        <li><em>Pulsar standalone</em> — single container that embeds ZooKeeper + BookKeeper + broker. Fine for local dev; Phase 1 swaps it for the official Pulsar chart with separate brokers/bookies/zookeepers.</li>
+        <li><em>Compose vs <code>docker run</code></em> — compose is purely declarative orchestration over the same container engine; the images and runtime are identical. Once we move to Kubernetes the compose file is discarded.</li>
+        <li><em>Init scripts run once</em> — Postgres only executes <code>/docker-entrypoint-initdb.d/*</code> on a fresh data volume. To re-bootstrap users/DBs you must <code>docker compose down -v</code> to drop the named volume.</li>
+      </ul>
+      <p><strong>Verification commands used:</strong></p>
+<pre>docker compose ps
+docker compose exec -T postgres psql -U postgres -c "\l"
+docker compose exec -T postgres psql -U orders -d orders -c "SELECT current_user, current_database();"
+docker compose exec -T postgres psql -U stock  -d stock  -c "SELECT current_user, current_database();"
+curl -s http://localhost:8083/admin/v2/clusters     # Pulsar admin reachable</pre>
+      <div class="notes"><strong>Gotchas:</strong> port 8085 was held by an unrelated Java process on the host — switched Pulsar admin to 8083. Local image <code>apachepulsar/pulsar:4.0.5</code> already cached, so the compose tag was aligned to it instead of pulling 4.0.0.</div>
+
+      <h4>Step 3.2 — stock-service core (JPA + REST) <span class="status done">done</span></h4>
+      <ul>
+        <li>Dependencies added: <code>spring-boot-starter-data-jpa</code>, <code>spring-boot-starter-actuator</code>, <code>org.postgresql:postgresql</code> (runtime).</li>
+        <li><code>application.yaml</code>: port 8081, JDBC URL pointed at the <code>stock</code> DB as user <code>stock</code>, <code>jpa.hibernate.ddl-auto: none</code>, <code>defer-datasource-initialization: true</code>, <code>spring.sql.init.mode: always</code> (Postgres is external — without this, schema.sql would be skipped). Actuator exposes <code>health,info,prometheus</code>.</li>
+        <li><code>schema.sql</code>: <code>inventory(sku PK, quantity, version)</code> and <code>order_audit(event_id PK, order_id, sku, quantity, received_at)</code>. Both <code>CREATE TABLE IF NOT EXISTS</code> for idempotent boot. <code>data.sql</code> seeds three SKUs with <code>ON CONFLICT DO NOTHING</code>.</li>
+        <li>Layered code: <code>entity/Stock</code> (JPA-only annotations, <code>@Version</code> for optimistic locking), <code>repository/StockRepository extends JpaRepository&lt;Stock,String&gt;</code>, <code>service/StockService</code> (<code>@Transactional</code> reserve/getStock/replenish), <code>web/StockController</code> with three endpoints, <code>web/*Request</code>/<code>*Response</code> records, <code>exception/GlobalExceptionHandler</code> via <code>@RestControllerAdvice</code> mapping the two custom exceptions to 404/409.</li>
+        <li>Smoke-tested all three endpoints + both error paths. The DB <code>version</code> column ticks up on each write, confirming optimistic locking is wired.</li>
+      </ul>
+      <p><strong>Concepts touched:</strong></p>
+      <ul>
+        <li><em>JPA persistence context</em> — a transaction-scoped HashMap of managed entities. Created on <code>@Transactional</code> entry, dirty-checked at flush, discarded on commit/rollback. Standard JPA, not Hibernate-specific.</li>
+        <li><em>Managed vs detached entities</em> — entities returned to controllers are detached; serialise to DTOs inside the service to avoid <code>LazyInitializationException</code> later.</li>
+        <li><em>Optimistic locking with <code>@Version</code></em> — Hibernate appends <code>WHERE version = ?</code> to every UPDATE and bumps it; concurrent writers can't both win.</li>
+        <li><em>Spring AOP / advice</em> — <code>@Transactional</code>, <code>@RestControllerAdvice</code>, <code>@Async</code>, <code>@Cacheable</code> are all proxy-based "advice" applied at method-invocation join points. Implication: self-invocation (<code>this.method()</code>) bypasses the proxy and the advice doesn't run.</li>
+        <li><em>JPA annotations vs Spring annotations</em> — <code>jakarta.persistence.*</code> is the portable JPA spec; <code>org.springframework.*</code> is the framework wiring. Two separate ecosystems.</li>
+        <li><em>Spring Boot's schema.sql / data.sql initializer</em> — runs once per boot, opt-in for non-embedded DBs via <code>spring.sql.init.mode: always</code>.</li>
+        <li><em>Custom runtime exceptions</em> — give business errors a type so a single <code>@RestControllerAdvice</code> can map them to HTTP status codes; Spring rolls back automatically only on runtime exceptions, so checked exceptions would silently commit.</li>
+      </ul>
+      <div class="notes"><strong>Gotchas:</strong> brew <code>postgresql@14</code> was running on the host, listening on IPv6 <code>[::1]:5432</code> and IPv4 <code>127.0.0.1:5432</code>; Docker's wildcard bind got shadowed, so <code>jdbc:postgresql://localhost:5432/stock</code> hit brew (no <code>stock</code> role) and Hibernate threw "Unable to determine Dialect without JDBC metadata". Fixed by <code>brew services stop postgresql@14</code>. Lombok-style <code>@Getter</code>/<code>@Setter</code> initially used in the entity but Lombok wasn't on the build classpath — switched to hand-written accessors for clarity in the learning project.</div>
+
+      <h4>Step 3.3 — order-service core (JPA + REST + RestClient) <span class="status done">done</span></h4>
+      <ul>
+        <li>Same dep additions as stock-service (JPA + actuator + Postgres driver) plus a configured <code>RestClient</code> bean for outbound HTTP. <code>application.yaml</code> wired to the <code>orders</code> DB (port 8080) with <code>stock-service.url</code> property pointing at <code>http://localhost:8081</code>.</li>
+        <li><code>schema.sql</code>: single <code>orders(id UUID PK, sku, quantity, status, rejection_reason, created_at)</code> table. Status is a Java enum stored as <code>VARCHAR</code> via <code>@Enumerated(EnumType.STRING)</code>.</li>
+        <li><strong>Three-outcome <code>placeOrder</code></strong>: stock-service 2xx → save with <code>CONFIRMED</code> + 201; stock-service 4xx (insufficient/unknown) → save with <code>REJECTED</code> + reason + 201; stock-service 5xx or network failure → no DB write, <code>StockServiceUnavailableException</code> propagates and <code>@RestControllerAdvice</code> turns it into 502 Bad Gateway.</li>
+        <li>Layered the RestClient call behind a <code>StockClient</code> component that catches <code>HttpClientErrorException</code> / <code>HttpServerErrorException</code> / <code>ResourceAccessException</code> and re-throws typed business exceptions. Keeps the service free of HTTP details.</li>
+        <li>Verified end-to-end with both services running: confirmed orders decremented inventory; rejected orders persisted with reason; 502 returned (and no row written) when stock-service was stopped.</li>
+      </ul>
+      <p><strong>Concepts touched:</strong></p>
+      <ul>
+        <li><em>Spring 6 <code>RestClient</code></em> as a configured <code>@Bean</code> with a <code>baseUrl</code> — central place to add tracing/auth/timeout interceptors later without touching call sites.</li>
+        <li><em>Outbound HTTP error taxonomy</em> — collapse the messy network world (4xx vs 5xx vs network) into a few typed business exceptions; let the service layer reason about outcomes, not status codes.</li>
+        <li><em>Distinguishing "rejected" vs "we don't know"</em> — a 4xx from a downstream means the answer is "no" (record it); a 5xx/network failure means we have no answer (don't fabricate one).</li>
+        <li><em>No <code>@Transactional</code> around the HTTP call</em> — would otherwise hold a JDBC connection idle for the full HTTP round-trip; let each <code>repo.save()</code> own its tiny transaction.</li>
+        <li><em>Reserved-word table names</em> — <code>order</code> is SQL-reserved, so we explicitly map to <code>@Table(name = "orders")</code>.</li>
+        <li><em><code>@Enumerated(EnumType.STRING)</code></em> always over default ordinal — survives enum reordering, readable in the DB.</li>
+      </ul>
+      <div class="notes"><strong>Gotchas:</strong> running from IntelliJ after a <code>build.gradle</code> change uses a stale classpath until "Reload All Gradle Projects" is hit; got a <code>NoClassDefFoundError: org/springframework/data/jpa/repository/JpaRepository</code> until the Gradle refresh propagated. <code>./gradlew :order-service:bootRun</code> from the terminal sidesteps this entirely. Also noted <code>jakarta.transaction.Transactional</code> in stock-service vs <code>org.springframework.transaction.annotation.Transactional</code> in order-service — both compile, but Spring's variant is preferred (supports <code>readOnly</code>, <code>propagation</code>, <code>rollbackFor</code>).</div>
+
+      <h4>Step 3.4 — Pulsar producer + consumer <span class="status done">done</span></h4>
+      <ul>
+        <li><code>compose.yaml</code> already has Pulsar 4.0.5 standalone on a named <code>pulsar_data</code> volume (broker 6650, admin 8083) plus optional <code>pulsar-manager</code> on 9527. Both depend on a healthcheck.</li>
+        <li><strong>Producer side (order-service)</strong>: added <code>spring-boot-starter-pulsar</code>, broker URL <code>pulsar://localhost:6650</code> in <code>application.yaml</code>. <code>event/OrderEventPublisher</code> is a thin <code>PulsarTemplate&lt;OrderCreatedEvent&gt;</code> wrapper that sends to <code>persistent://public/default/orders.created</code> with <code>Schema.JSON(OrderCreatedEvent.class)</code>.</li>
+        <li><strong>Save → publish → update flow</strong> in <code>OrderService.placeOrder</code>: persist the order with <code>status=CONFIRMED</code>, <code>event_id</code> (random UUID), <code>published_at=NULL</code>; then publish the event; then a second <code>save</code> sets <code>published_at=now()</code>. Publish failure is caught and logged — the row stays as a recovery candidate.</li>
+        <li><code>schema.sql</code> additions on the <code>orders</code> table: <code>event_id UUID UNIQUE</code>, <code>published_at TIMESTAMPTZ</code>, plus a partial index <code>idx_orders_unpublished ON orders(created_at) WHERE status='CONFIRMED' AND published_at IS NULL</code> — index covers only the tiny set of "unfinished work" rows.</li>
+        <li><strong>Consumer side (stock-service)</strong>: <code>entity/OrderAudit</code> uses <code>event_id</code> as the JPA <code>@Id</code> (Lombok-style accessors to match <code>Stock</code>); <code>repository/OrderAuditRepository</code> is a plain <code>JpaRepository</code>. <code>event/OrderEventListener</code> uses <code>@PulsarListener(topics=..., subscriptionName="stock-service-audit", schemaType=JSON)</code> with method-level <code>@Transactional</code>; idempotency is enforced by an <code>existsById</code> pre-check + <code>try/catch DataIntegrityViolationException</code> for the race.</li>
+        <li><code>application.yaml</code>: <code>spring.pulsar.consumer.subscription.type: Shared</code> and <code>spring.pulsar.listener.concurrency: 5</code> — five consumer threads per JVM all attached to the one named subscription, broker round-robins messages across them.</li>
+        <li><strong>Startup recovery (Step F)</strong>: <code>event/OrderPublishRecovery</code> in order-service runs on <code>ApplicationReadyEvent</code> (so the HTTP server is already up), marked <code>@Async</code> so a slow/down Pulsar at boot doesn't delay readiness. Pages through <code>findUnpublishedConfirmed</code> in batches of 500, republishes each event, then sets <code>published_at</code>. Loop terminates if a whole batch makes no progress (Pulsar still down) — leftover rows are picked up on the next startup. <code>@EnableAsync</code> added to <code>OrderApplication</code>.</li>
+        <li>End-to-end smoke run: place an order → JSON event lands on the topic (verified via <code>pulsar-client consume</code>); stock-service log shows <code>received OrderCreatedEvent</code>; <code>order_audit</code> row appears keyed on the producer's <code>event_id</code>; <code>orders.published_at</code> is populated on the producer side.</li>
+      </ul>
+      <p><strong>Concepts touched:</strong></p>
+      <ul>
+        <li><em>Topic / subscription / consumer</em> — a topic is the durable log; a <em>subscription</em> is a named server-side cursor over that log plus a dispatch policy; a consumer is a transient client borrowing the subscription's progress. Many subscriptions on one topic each see the full stream (fan-out); many consumers on one subscription split the stream by subscription type.</li>
+        <li><em>Subscription types</em> — Exclusive (one consumer at a time), Failover (active + standbys), Shared (round-robin across N consumers, no per-key ordering), Key_Shared (round-robin across consumers but per-key affinity preserves order). Shared was picked because audit writes are independent and we want horizontal scale; Exclusive would have crash-looped the moment <code>concurrency &gt; 1</code> or replicas &gt; 1.</li>
+        <li><em>At-least-once + idempotency</em> — Pulsar guarantees delivery but may redeliver if an ack is lost or the listener throws. The consumer must dedupe; we do it with a unique <code>event_id</code> column and treat duplicate-key violations as "already processed."</li>
+        <li><em>Dual-write hazard</em> — writing to a DB and a broker without a shared transaction means three failure modes (only DB, only broker, both). Mitigation here: persist first (<em>system of record</em>), publish second, mark <code>published_at</code> third; recovery loop fixes the "persisted but never published" case. The transactional outbox pattern is the strict version of this — deferred to a later phase.</li>
+        <li><em>Partial indexes</em> — Postgres can index a subset of a table via <code>WHERE</code>. <code>idx_orders_unpublished</code> indexes only the unpublished CONFIRMED rows (typically zero), so the recovery query scans a tiny structure even on a 100M-row <code>orders</code> table.</li>
+        <li><em>B+tree pages</em> — index lookups are <code>O(log_fanout N)</code> page reads, not <code>O(log₂ N)</code> entry comparisons; an 8 KB page holds ~200 routing entries, so depth 4 covers a billion rows. Within a page, Postgres binary-searches the sorted entries.</li>
+        <li><em><code>ApplicationReadyEvent</code> vs <code>@PostConstruct</code></em> — the former fires after the entire context is up, beans are wired, and the embedded server is accepting traffic; the latter runs during bean construction when collaborators may not be ready. Recovery uses the former because <code>PulsarTemplate</code> must be alive when it runs.</li>
+        <li><em><code>@Async</code> + <code>@EnableAsync</code></em> — without <code>@EnableAsync</code> the annotation is a silent no-op. With it, Spring submits the call to a <code>TaskExecutor</code> (proxy-based AOP again). Reason for using it on startup: a synchronous listener that blocks on a slow Pulsar would delay the readiness probe in K8s.</li>
+        <li><em>Self-invocation bypass</em> — <code>this.method()</code> inside the same bean skips the Spring proxy, so <code>@Transactional</code>/<code>@Async</code>/<code>@Cacheable</code> on the inner method is silently ignored. Recovery component avoids it entirely by relying on <code>JpaRepository</code>'s own per-call transactions.</li>
+        <li><em>Daemon vs non-daemon threads</em> — JVM exits when all non-daemon threads terminate. <code>main()</code> returning doesn't kill the app because Tomcat's acceptor, the Pulsar client, HikariCP, and friends all run non-daemon threads. Shutdown is driven by <code>ApplicationContext.close()</code> via the JVM shutdown hook.</li>
+        <li><em>AOP framing</em> — Spring's proxy AOP (transactions, async, cache, security, retry) wraps beans with a generated proxy at startup; method calls go through the proxy first. <code>@RestControllerAdvice</code> looks similar but is a Spring MVC pipeline registry, not proxy AOP — so it doesn't have the self-invocation gotcha.</li>
+        <li><em>Pulsar retention</em> — a message becomes deletion-eligible only after <em>every</em> subscription has acked (or TTL has auto-acked) it. Default standalone retention is 0/0, so eligible messages get GC'd at the next ledger boundary. TTL is the safety net against a forgotten subscription pinning storage forever; the trade-off is that a long-offline consumer can return to find its cursor advanced past missed messages.</li>
+      </ul>
+      <div class="notes"><strong>Gotchas:</strong>
+        <ul>
+          <li><strong>"Not enough non-faulty bookies available"</strong> on first publish after restarting Pulsar a few times — broker metadata referenced ledgers a previous bookie owned but the bookie's local data was inconsistent. Resolution: <code>docker compose stop pulsar pulsar-manager &amp;&amp; docker compose rm -f pulsar pulsar-manager &amp;&amp; docker volume rm istio-flux-helm-practice_pulsar_data &amp;&amp; docker compose up -d pulsar</code>. Wipes the named volume only; Postgres data is unaffected.</li>
+          <li>Spring Pulsar 4.0.5 doesn't expose every Pulsar client setting via direct YAML keys — e.g. <code>ackTimeout</code> needs a <code>ConsumerBuilderCustomizer</code> bean, not a property. Confirmed by the property metadata before reaching for the customizer.</li>
+          <li>Catching <code>DataIntegrityViolationException</code> <em>inside</em> a <code>@Transactional</code> method works for our duplicate case but doesn't generalise — Spring marks the transaction rollback-only on any unexpected exception, so the surrounding <code>save</code> can fail with <code>UnexpectedRollbackException</code> on commit. The robust pattern is <code>existsById</code> first + <code>try/catch</code> as a race-window fallback; we used both.</li>
+          <li>IntelliJ classpath staleness after adding the Pulsar starter: same as in 3.3, "Reload All Gradle Projects" or run from the terminal. Hit it again here.</li>
+          <li>Initial draft of the recovery component had <code>@Transactional markPublished()</code> called from <code>this.recoverOnStartup()</code> — silent self-invocation bug. Rewritten to delete the inner annotation and rely on the repository's own per-method transactions; no proxy gymnastics needed.</li>
+        </ul>
+      </div>
+
+      <h4>Step 3.5 — Cross-cutting observability primitives <span class="status done">done</span></h4>
+      <p>Goal: end-to-end distributed tracing (HTTP + Pulsar) into Jaeger, structured JSON logs carrying the trace id, and Prometheus-scrapeable metrics. Done in four blocks: <strong>A</strong> trace backend in compose, <strong>B</strong> tracing wiring (deps + config), <strong>C</strong> structured JSON logging, <strong>D</strong> Pulsar trace propagation.</p>
+
+      <p><strong>Block A — trace backend in compose <span class="status done">done</span></strong></p>
+      <ul>
+        <li>Added <code>jaeger</code> service to <code>compose.yaml</code> using <code>jaegertracing/all-in-one:1.76.0</code> (latest stable v1; Jaeger v2 line under image <code>jaeger:2.x</code> intentionally skipped while its migration story settles).</li>
+        <li>Ports exposed: <code>16686</code> (UI), <code>4317</code> (OTLP gRPC receiver), <code>4318</code> (OTLP HTTP receiver — the one our apps will use). Env <code>COLLECTOR_OTLP_ENABLED=true</code> kept defensively even though enabled by default since 1.35.</li>
+        <li>Container up; UI returns 200 at <code>http://localhost:16686</code>; service dropdown empty until Block B emits the first span.</li>
+      </ul>
+      <p><strong>Concepts touched (Block A):</strong></p>
+      <ul>
+        <li><em>Trace backend = collector + storage + UI</em>. Three concerns, one process in <code>all-in-one</code>; three separate deployments in production. <code>all-in-one</code> uses in-memory storage — restart wipes traces, fine for local learning.</li>
+        <li><em>Istio is not a tracing backend</em> — Istio's sidecars only <em>emit</em> spans (and only for HTTP/gRPC). The backend that <em>receives, stores, and visualises</em> them is separate (Jaeger, Tempo, Datadog, etc.). Istio docs include sample manifests that install Jaeger alongside Istio, which is why people conflate them.</li>
+        <li><em>Why we still need app-side tracing under Istio</em> — sidecars are blind to Pulsar (binary protocol, not HTTP) and blind to in-process work (DB calls, business spans). The OTLP exporter we wire in Block B keeps working when we move to Istio; sidecars then add <em>additional</em> spans on top.</li>
+        <li><em>Span / trace / trace context</em> — span = one timed unit of work with a parent; trace = tree of spans sharing a trace id; W3C <code>traceparent</code> header carries <code>trace_id</code>, <code>parent_span_id</code>, sampling flag across HTTP hops. For Pulsar we'll inject the same header into message properties manually (Block D).</li>
+        <li><em>OTLP</em> — wire format for spans/metrics/logs. gRPC on 4317, HTTP-protobuf on 4318. Replaces Jaeger's old Thrift and Zipkin's JSON formats; backend-agnostic.</li>
+        <li><em>Sampling</em> — decision is taken at the <em>root</em> span and carried in the trace context, so all downstream services agree. Dev = 1.0 (everything); prod typically 0.01–0.1 with optional tail-based sampling at the collector tier.</li>
+        <li><em>MDC (Mapped Diagnostic Context)</em> — SLF4J <code>ThreadLocal</code> map that gets included in every log line. Micrometer Tracing populates <code>traceId</code>/<code>spanId</code> automatically, so logs and traces correlate. Doesn't survive thread hops (<code>@Async</code>, custom executors) — fixed by a <code>TaskDecorator</code> in Block D.</li>
+      </ul>
+
+      <p><strong>Block B — tracing wiring (deps + config) <span class="status done">done</span></strong></p>
+      <ul>
+        <li>Added <code>spring-boot-starter-opentelemetry</code> to both services. Spring Boot 4.0 collapsed the legacy split (<code>micrometer-tracing-bridge-otel</code> + <code>opentelemetry-exporter-otlp</code> + manual SDK config) into one starter that pulls in <code>spring-boot-opentelemetry</code> autoconfig, the OTLP HTTP exporter, the W3C propagator, and the Slf4J bridge.</li>
+        <li>Property namespace also moved: legacy <code>management.tracing.*</code> / <code>management.otlp.tracing.*</code> -> <code>management.opentelemetry.tracing.export.otlp.*</code>. Set <code>management.tracing.sampling.probability: 1.0</code> (kept) and <code>management.opentelemetry.tracing.export.otlp.endpoint: http://localhost:4318/v1/traces</code>.</li>
+        <li>Verified end-to-end: <code>curl /api/services</code> against Jaeger now lists <code>order-service</code>; per-request spans visible in the UI with trace tree across the synchronous HTTP hop.</li>
+      </ul>
+      <p><strong>Concepts and gotchas (Block B):</strong></p>
+      <ul>
+        <li><em>Two flows, not one.</em> <strong>Flow X</strong> = trace-context propagation (in-band, the <code>traceparent</code> header carried with the request). <strong>Flow Y</strong> = span export (out-of-band, the OTLP HTTP POST to Jaeger every few seconds). Both must work; they fail independently. Diagnostic order: did spans get created (Flow X)? did they reach Jaeger (Flow Y)?</li>
+        <li><em>Tracer bean alone is not enough.</em> Having an <code>OtelTracer</code> in the context proves the SDK is wired, but spans don't appear unless something <em>instruments</em> the request. In Spring Boot 4.0 that's <code>WebMvcObservationAutoConfiguration</code> registering a <code>FilterRegistrationBean&lt;ServerHttpObservationFilter&gt;</code>, which in turn requires <code>spring-boot-micrometer-observation</code> on the classpath (transitively pulled by <code>spring-boot-starter-actuator</code> + <code>spring-boot-starter-web</code>).</li>
+        <li><em>Diagnosing the empty <code>[appName,,]</code> prefix.</em> Misleading symptom — the prefix was empty in our logs not because MDC was unpopulated but because every visible log line ran on a non-request thread (Hibernate <code>HikariPool-1</code>, Pulsar <code>pulsar-client-io-*</code>, <code>main</code>). The happy path had zero <code>log.info</code> calls, so MDC's correctly-populated <code>traceId</code> never had anywhere to print. Lesson: don't trust correlation absence as a tracing failure until you've added a log statement on the request thread.</li>
+        <li><em>Diagnostic recipe.</em> When tracing seems broken: (1) <code>/actuator/conditions</code> for autoconfig matches; (2) <code>/actuator/beans</code> filtered for <code>Tracer</code>, <code>SpanProcessor</code>, <code>SpanExporter</code>, <code>FilterRegistrationBean</code>; (3) <code>/actuator/configprops</code> to confirm YAML keys actually bound (look for <code>origin</code> field pointing at your file); (4) <code>curl http://localhost:16686/api/services</code> to confirm Flow Y; (5) only then look for missing instrumentation.</li>
+      </ul>
+
+      <p><strong>Block C — structured JSON logging <span class="status done">done</span></strong></p>
+      <ul>
+        <li>Set <code>logging.structured.format.console: ecs</code> on both services. Removed the now-redundant <code>logging.pattern.correlation</code> (structured formatters bypass the legacy pattern entirely).</li>
+        <li>Spring Boot resolves <code>ecs</code> to <code>ElasticCommonSchemaStructuredLogFormatter</code>, which emits one JSON object per line with ECS field names: <code>@timestamp</code>, <code>log.level</code>, <code>message</code>, <code>service.name</code>, <code>trace.id</code>, <code>transaction.id</code> (Spring's name for span id), <code>process.thread.name</code>, <code>ecs.version</code>.</li>
+        <li>MDC keys are mapped automatically: SLF4J's <code>traceId</code> -> ECS <code>trace.id</code>, <code>spanId</code> -> ECS <code>transaction.id</code>. No format string to maintain.</li>
+      </ul>
+      <p><strong>Concepts (Block C):</strong></p>
+      <ul>
+        <li><em>Why ECS over Logstash format.</em> Both are JSON; ECS is the schema Elastic standardised on (and that Datadog, Splunk, Loki all understand via mappers). Logstash format is older, more freeform. ECS gives stable field names across the industry.</li>
+        <li><em>Trade-off:</em> JSON logs are unreadable in a dev terminal compared to plain text. Acceptable here because we always have Jaeger for the trace view and we'll pipe through <code>jq</code> when grepping. Could be flipped via Spring profile (<code>application-dev.yaml</code> overrides to plain pattern) — deferred until it bites.</li>
+        <li><em>Built-in vs. custom appenders.</em> Pre-3.4 you needed <code>logstash-logback-encoder</code> or hand-rolled JSON layouts. Spring Boot 3.4+ ships the formatters in core, so no extra dependency.</li>
+      </ul>
+
+      <p><strong>Block D — Pulsar trace propagation <span class="status done">done</span></strong></p>
+      <ul>
+        <li>Two YAML lines, no Java code: <code>spring.pulsar.template.observations-enabled: true</code> on the producer side (order-service) and <code>spring.pulsar.listener.observation-enabled: true</code> on the consumer side (stock-service).</li>
+        <li>Spring for Apache Pulsar 1.2+ ships built-in Micrometer Observation support: when enabled, the template wraps each <code>send()</code> in an observation that injects <code>traceparent</code> into the outgoing Pulsar message's properties map; the listener container wraps each <code>onMessage()</code> in an observation that extracts <code>traceparent</code> from properties and binds it as the parent context.</li>
+        <li>Property name asymmetry to remember: template is <strong>plural</strong> (<code>observations-enabled</code>), listener is <strong>singular</strong> (<code>observation-enabled</code>). Both default to <code>false</code> in Spring Boot 4.0, so explicit enabling is required on both sides.</li>
+      </ul>
+      <p><strong>Concepts (Block D):</strong></p>
+      <ul>
+        <li><em>Why this works without code.</em> The same Micrometer Observation API that <code>ServerHttpObservationFilter</code> uses for HTTP also has tracing handlers attached to it. Once the producer creates an observation, the <code>PropagatingSenderTracingObservationHandler</code> bean (auto-configured by the OTel starter) handles the inject step; on the consumer side, <code>PropagatingReceiverTracingObservationHandler</code> handles the extract step. Pulsar message properties are just a string-string map, indistinguishable from HTTP headers from the propagator's point of view.</li>
+        <li><em>What we did NOT do (and why it's fine).</em> The original plan called for a <code>TaskDecorator</code> on the recovery <code>@Async</code> worker to carry MDC across thread hops. Skipped because our only <code>@Async</code> invocation runs once at <code>ApplicationReadyEvent</code> with no parent trace context — there's nothing to carry. If we later add a request-triggered <code>@Async</code> path, we'll wire <code>ContextPropagatingTaskDecorator</code> at that point.</li>
+        <li><em>Verification.</em> Send a <code>POST /api/orders</code>, then in Jaeger search for the trace by <code>service: order-service</code>. The trace tree should now show: <code>POST /api/orders</code> -&gt; <code>RestClient stock-service</code> -&gt; <code>orders.created send</code> -&gt; (separate process) <code>orders.created receive</code> -&gt; JDBC INSERT into <code>order_audit</code>. All five spans share one trace id.</li>
+      </ul>
+
+      <h4>Step 3.6 — Redis cache + idempotency keys <span class="status done">done</span></h4>
+      <p>Add Redis as a third stateful component alongside Postgres and Pulsar. Two deliberately different uses: <strong>cache-aside</strong> for stock-service GET reads (TTL + invalidation on reserve), and <strong>idempotency keys</strong> for <code>POST /api/orders</code> via client-supplied <code>Idempotency-Key</code> header (<code>SET NX EX</code> atomic check + cached response replay). Spring Data Redis with the default Lettuce client; direct <code>RedisTemplate</code> calls (not <code>@Cacheable</code>) so the actual commands stay visible during learning. Done in four blocks: <strong>A</strong> Redis in compose, <strong>B</strong> Spring Data Redis wiring, <strong>C</strong> idempotency on <code>POST /api/orders</code>, <strong>D</strong> read-cache on stock lookups.</p>
+      <p><strong>Honest framing:</strong> at this scale (one stock-service instance, single-node Postgres on the same host) the cache is pedagogically motivated, not performance-driven. The lesson is the <em>pattern</em> — cache-aside, TTL safety nets, and the inevitable invalidation pain. Distributed locks (<code>SETNX</code>, Redlock) intentionally out of scope; optimistic locking via JPA <code>@Version</code> already covers our concurrency needs.</p>
+
+      <p><strong>Block A — Redis in compose <span class="status done">done</span></strong></p>
+      <ul>
+        <li>Added <code>redis</code> service using <code>redis:8.6-alpine</code> (Redis 8.6 stable line on the Alpine base ~30 MB; same binary as the Debian-based image, smaller surface).</li>
+        <li>Persistence disabled (<code>--save ""</code> + <code>--appendonly no</code>) — cache and idempotency markers are recoverable enough that durability is not worth the local-dev complexity.</li>
+        <li>Memory cap <code>--maxmemory 128mb</code> with <code>--maxmemory-policy allkeys-lru</code>: under pressure, evict least-recently-used keys regardless of TTL. <code>volatile-lru</code> would only evict TTL'd keys; behaviour is identical for us since every key we'll write has a TTL, and <code>allkeys-lru</code> is the safer default (never refuses a write).</li>
+        <li>Healthcheck <code>redis-cli ping</code>; container reports healthy once <code>PONG</code> returns.</li>
+        <li>Verified: <code>PING -&gt; PONG</code>, <code>redis_version: 8.6.3</code>, port 6379 mapped to host.</li>
+      </ul>
+      <p><strong>Concepts touched (Block A):</strong></p>
+      <ul>
+        <li><em>In-memory primary, disk secondary.</em> Redis serves all reads from RAM; persistence is a backup mechanism, not the read path. Sub-millisecond latency comes from this and the single-threaded command loop (no locking).</li>
+        <li><em>Eviction policies are not all equivalent.</em> <code>noeviction</code> = refuse writes when full (correct for "Redis is the source of truth" use cases); <code>allkeys-lru</code> = treat as cache, drop coldest; <code>volatile-lru</code> = same but only TTL'd keys; <code>allkeys-lfu</code> = least-frequently-used (better for skewed access patterns). Picking wrong = either OOM kills or unexpected refusal of writes.</li>
+        <li><em>Persistence options recap.</em> RDB = periodic snapshot (fast, can lose minutes on crash). AOF = append every write to a log (durable, slower writes, replays on restart). Default config: RDB only. We disabled both because cache + idempotency markers can absorb a restart-loss in dev.</li>
+        <li><em>Why the Alpine variant.</em> Same Redis, smaller image. Production sometimes prefers Debian-slim for glibc compatibility with sidecars, but for our compose-only world Alpine is fine.</li>
+        <li><em>Five commands cover 90% of what we'll do:</em> <code>GET</code>, <code>SET key value [EX seconds] [NX]</code>, <code>DEL</code>, <code>TTL</code>, <code>EXISTS</code>. Block C uses <code>SET … NX EX</code>; Block D uses <code>SET … EX</code> + <code>DEL</code>.</li>
+      </ul>
+
+      <p><strong>Block B — Spring Data Redis wiring <span class="status done">done</span></strong></p>
+      <ul>
+        <li>Added <code>spring-boot-starter-data-redis</code> to both <code>order-service</code> and <code>stock-service</code> build files. Pulls in Lettuce + Spring Data Redis transitively.</li>
+        <li><code>application.yaml</code> on both services: <code>spring.data.redis.host: localhost</code>, <code>port: 6379</code>. Compose maps host 6379 -&gt; container 6379.</li>
+        <li>Auto-configured beans we use: <code>StringRedisTemplate</code> (UTF-8 key/value, both <code>String</code>). We deliberately avoid the generic <code>RedisTemplate&lt;Object,Object&gt;</code> — its default JDK serialiser is fragile across class versions and unreadable in <code>redis-cli</code>.</li>
+        <li>Both services do their own JSON via the shared Jackson 3 <code>ObjectMapper</code> bean — payloads stored in Redis are inspectable by hand (<code>GET key</code> returns a JSON string).</li>
+        <li>Verified: <code>/actuator/health/redis</code> reports <code>UP</code> on both services; Spring's <code>RedisHealthIndicator</code> issues a <code>PING</code> on every probe.</li>
+      </ul>
+      <p><strong>Concepts touched (Block B):</strong></p>
+      <ul>
+        <li><em>Lettuce vs Jedis.</em> Spring Boot defaults to Lettuce — netty-based, non-blocking, thread-safe to share one connection across many callers. Jedis is older, blocking, and needs a pool because individual connections aren't thread-safe. For our synchronous code path either works; Lettuce is the lower-friction default.</li>
+        <li><em><code>StringRedisTemplate</code> vs <code>RedisTemplate</code>.</em> The string variant fixes serialisation to UTF-8 on both sides. The generic one tries to be polymorphic and defaults to Java serialisation — opaque bytes in Redis, version-fragile, never the right answer for new code. Pick <code>StringRedisTemplate</code> + explicit JSON.</li>
+        <li><em>Key-prefix isolation.</em> Two unrelated workloads (idempotency markers and stock-read cache) share one Redis instance, isolated by prefix (<code>idem:order:</code> vs <code>stock:</code>). In prod you'd separate by database number or instance — same pattern, more enforcement.</li>
+      </ul>
+
+      <p><strong>Block C — idempotency on <code>POST /api/orders</code> <span class="status done">done</span></strong></p>
+      <ul>
+        <li><code>IdempotencyService</code> in <code>order-service</code>: three-state machine (<em>Fresh</em>, <em>InFlight</em>, <em>Replay</em>) over one Redis key.</li>
+        <li><code>claim(key)</code>: atomic <code>SET idem:order:&lt;key&gt; &lt;pending-marker&gt; NX EX 86400</code>. On success -&gt; <code>Fresh</code>. On failure, <code>GET</code> the existing value: marker -&gt; <code>InFlight</code>; any other JSON -&gt; <code>Replay(json)</code>. Race-tolerant: if the key TTL'd between <code>SETNX</code> and <code>GET</code> we treat as <code>Fresh</code> on retry.</li>
+        <li><code>complete(key, response)</code> serialises the <code>OrderResponse</code> and overwrites the marker (same key, same TTL). <code>release(key)</code> <code>DEL</code>s on processing failure so retries aren't locked out.</li>
+        <li><code>ClaimResult</code> modelled as a <code>sealed interface</code> with three records (<code>Fresh</code>, <code>InFlight</code>, <code>Replay(json)</code>). Lets the controller use a pattern-matching <code>switch</code> the compiler enforces as exhaustive.</li>
+        <li><code>OrderController</code>: reads optional <code>Idempotency-Key</code> header; no header -&gt; passthrough; with header -&gt; <code>claim()</code> + <code>switch</code>. <em>Fresh</em> calls <code>placeOrder</code> and stores the response; <em>InFlight</em> throws <code>IdempotencyConflictException</code> (mapped to 409 in <code>GlobalExceptionHandler</code>); <em>Replay</em> returns the cached JSON with a <code>Idempotent-Replayed: true</code> response header so clients can tell.</li>
+        <li>Verified: concurrent identical-key requests -&gt; one returns 201, the other 409; same key after completion -&gt; 201 with replay header; expired key (TTL) -&gt; behaves as a fresh request.</li>
+      </ul>
+      <p><strong>Concepts touched (Block C):</strong></p>
+      <ul>
+        <li><em><code>SET NX EX</code> is one atomic command.</em> No race between "check existence" and "claim" — the single round-trip either set-and-returned-OK or didn't. Same primitive that backs naïve distributed locks (the Redlock literature lives on top of this).</li>
+        <li><em>State collapsed into one key.</em> Three states (<em>absent</em>, <em>pending</em>, <em>done</em>) encoded as: missing key / sentinel JSON / response JSON. Avoids extra keys and per-state TTL gymnastics.</li>
+        <li><em>Client owns the key, server enforces.</em> The key has to exist before the first send so retries can identify themselves. Server-generated keys would defeat the purpose — every retry would look like a new request.</li>
+        <li><em>Sealed interface + record + exhaustive switch.</em> Compile-time guarantee that every <code>ClaimResult</code> case is handled in the controller. Adding a fourth state later forces a compile error at the switch site — better than runtime "default: log.warn" rot.</li>
+        <li><em>Release-on-failure.</em> Without it, a transient processing error locks out retries until the 24h TTL expires. The controller wraps <code>placeOrder</code> in a try/catch that calls <code>release(key)</code> then rethrows.</li>
+        <li><em>What this does not protect against.</em> Two different clients reusing the same key by accident (their bug, not ours). Network partitions causing the client to retry on a different replica that talks to a different Redis (single-shard deployment, n/a here).</li>
+      </ul>
+
+      <p><strong>Block D — read-cache on stock lookups <span class="status done">done</span></strong></p>
+      <ul>
+        <li><code>StockCacheService</code> in <code>stock-service</code>: <code>getStock(sku)</code> / <code>putStock(sku, response)</code> / <code>invalidate(sku)</code>. Key prefix <code>stock:</code>, TTL 5 minutes.</li>
+        <li>Cache-aside wired into <code>StockService.getStock</code>: cache lookup first; on miss, <code>findById</code> in Postgres, build a <code>StockResponse</code> DTO, <code>putStock</code>, return. On hit, return immediately — no DB touch.</li>
+        <li>Invalidation on writes: <code>reserve</code> and <code>replenish</code> call <code>cacheService.invalidate(sku)</code> after the JPA <code>save</code>. <strong>Delete, never update</strong> — see concepts below.</li>
+        <li>Return type of <code>StockService.getStock</code> changed from the JPA <code>Stock</code> entity to the <code>StockResponse</code> DTO. Controller now just returns whatever the service returns. Keeps Jackson away from Hibernate-managed proxies and pushes the entity boundary deeper.</li>
+        <li>Best-effort failures: Jackson serialisation/deserialisation errors are caught and treated as a miss (<code>getStock</code>) or no-op (<code>putStock</code>). The cache must never propagate its own failures up the call stack.</li>
+        <li>Verified end-to-end: GET -&gt; miss (DB hit, key populated, TTL ~300s); GET -&gt; hit (no DB hit); POST <code>/api/reserve</code> -&gt; DB update + <code>DEL stock:SKU</code>; GET again -&gt; miss + repopulate with new value (100 -&gt; 90).</li>
+      </ul>
+      <p><strong>Concepts touched (Block D):</strong></p>
+      <ul>
+        <li><em>Cache-aside.</em> Application controls the cache: read-through-on-miss, invalidate-on-write. Contrasts with write-through (the cache writes downstream itself) and write-behind (cache buffers writes asynchronously). Cache-aside is the only one of the three that works when the cache and DB are distinct systems with no shared transaction.</li>
+        <li><em>Delete-on-write, not update-on-write.</em> Two writers racing on the same SKU: each computes a new value and tries to <code>SET</code> the cache. If A's <code>SET</code> arrives after B's despite A's value being older, the cache is stuck on A's stale value until TTL. <code>DEL</code> is commutative — order doesn't matter — and the next reader repopulates with whatever Postgres now says is true.</li>
+        <li><em>TTL as a safety net.</em> Five minutes is short enough that any missed invalidation (Redis down during a write, JVM crash mid-method, bug we haven't found yet) self-heals quickly. The cache hit ratio takes a small hit; the consistency floor is dramatically better.</li>
+        <li><em>DTO in the cache, not the entity.</em> Caching the JPA entity drags lazy-init proxies, <code>@Version</code>, and Hibernate's serialisation quirks through Jackson. Caching a record DTO is forward-compatible and inspectable.</li>
+        <li><em>Reads are cached, writes always touch the source.</em> <code>reserve</code>/<code>replenish</code> read from Postgres, never the cache. The cache is allowed to be stale; the source of truth never is. Reading a stale "<code>quantity=100</code>" while DB says 0 would let us oversell.</li>
+        <li><em>Dual-write window (known, accepted).</em> <code>invalidate(sku)</code> fires inside <code>@Transactional</code>, before the JDBC commit. A reader landing between the <code>DEL</code> and the commit reads the still-uncommitted-old value from Postgres and repopulates the cache with it, stuck until TTL. Proper fix: <code>TransactionSynchronizationManager.registerSynchronization</code> with an <code>afterCommit</code> hook. Deferred; left as a TODO in the head.</li>
+      </ul>
+    </div>
+    <div class="step" id="p0-s4">
+      <h3>Step 4 — Containerise the services <span class="status done">done</span></h3>
+      <p>Both services run from images, wired into the same <code>compose.yaml</code> as the infra. Stack locked in: <strong>multi-stage Dockerfile</strong> per service, <strong>Spring Boot layered jars</strong> via the <code>tools</code> jarmode, <strong><code>eclipse-temurin:23-jre</code></strong> for the runtime stage, <strong>non-root user</strong> baked in, <strong>container-aware JVM flags</strong>, <strong>healthcheck-gated startup ordering</strong> in compose.</p>
+
+      <h4>Step 4.1 — Per-service Dockerfile (three stages) <span class="status done">done</span></h4>
+      <ul>
+        <li><em>Stage 1 — builder.</em> <code>eclipse-temurin:23-jdk</code>. Copies the wrapper + root build files + every module's <code>build.gradle</code> <em>before</em> any source, then runs <code>:&lt;service&gt;:dependencies</code> on a BuildKit <code>--mount=type=cache,target=/root/.gradle</code>. Editing a <code>.java</code> file leaves this layer cached and skips the ~300 MB dependency download. Real build is <code>:&lt;service&gt;:bootJar --no-daemon -x test</code>; tests are CI's job, not the image's.</li>
+        <li><em>Stage 2 — extractor.</em> Same JDK image. <code>java -Djarmode=tools -jar app.jar extract --layers --launcher --destination layers</code> explodes the fat jar into four sibling dirs (<code>dependencies/</code>, <code>spring-boot-loader/</code>, <code>snapshot-dependencies/</code>, <code>application/</code>) per the <code>BOOT-INF/layers.idx</code> the bootJar wrote. Spring Boot 4 uses <code>tools</code>; the old <code>layertools</code> jarmode is gone.</li>
+        <li><em>Stage 3 — runtime.</em> <code>eclipse-temurin:23-jre</code>, ~200 MB lighter than the JDK base. Installs <code>curl</code> (needed for the actuator HTTP probe in both compose and K8s), creates a <code>spring</code> user at uid/gid 10001, drops to it via <code>USER spring:spring</code>. Then four <code>COPY --from=extractor --chown=spring:spring</code> instructions, one per layer dir, ordered low-churn → high-churn so a code-only change only invalidates the ~200 KB <code>application/</code> layer on push.</li>
+        <li><em>Entrypoint.</em> <code>["java", "org.springframework.boot.loader.launch.JarLauncher"]</code>. Exec form (JSON array) so PID 1 is the JVM and SIGTERM from <code>docker stop</code> / K8s reaches Spring's shutdown hooks directly. <code>JarLauncher</code> reads <code>BOOT-INF/classpath.idx</code> to assemble the classpath at startup.</li>
+        <li><em>Non-root by construction.</em> K8s PodSecurity <code>restricted</code> profile rejects images that don't declare <code>runAsNonRoot</code>; baking the user into the image now avoids a Helm-time rewrite of every chart.</li>
+      </ul>
+
+      <h4>Step 4.2 — JVM container ergonomics <span class="status done">done</span></h4>
+      <ul>
+        <li><code>JAVA_TOOL_OPTIONS="-XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0 -XX:+ExitOnOutOfMemoryError"</code>.</li>
+        <li><em>Why <code>MaxRAMPercentage</code> and not <code>-Xmx</code>.</em> Heap is now derived from the cgroup memory limit, so K8s <code>resources.limits.memory</code> becomes the single knob. Hardcoding <code>-Xmx</code> in the image makes the JVM blind to the orchestrator's view of "how much RAM does this pod have".</li>
+        <li><em>Why <code>ExitOnOutOfMemoryError</code>.</em> Crash fast on OOM and let the orchestrator restart the pod, instead of limping along with a corrupted heap and degraded service.</li>
+      </ul>
+
+      <h4>Step 4.3 — Build context + <code>.dockerignore</code> <span class="status done">done</span></h4>
+      <ul>
+        <li>Build context is the <strong>repo root</strong>, not the module dir, because the multi-module Gradle build needs <code>settings.gradle</code>, the wrapper, and the sibling modules visible in one tree. Command: <code>docker build -f modules/&lt;svc&gt;/Dockerfile -t &lt;svc&gt;:dev .</code></li>
+        <li><code>.dockerignore</code> at the root strips <code>.git</code>, <code>**/build/</code>, <code>**/.gradle/</code>, IDE dirs, <code>docs/</code>, <code>compose.yaml</code>, and <code>infra/</code>. Without it, BuildKit ships hundreds of MB of build outputs into the daemon on every <code>docker build</code> and the dependency-cache layer thrashes.</li>
+      </ul>
+
+      <h4>Step 4.4 — Wire both services into <code>compose.yaml</code> <span class="status done">done</span></h4>
+      <ul>
+        <li><em>Service-name DNS, not <code>localhost</code>.</em> Inside the compose network each container's <code>localhost</code> is itself; cross-container reads have to use the compose service name. The application.yaml defaults stay <code>localhost</code> (for <code>./gradlew bootRun</code> against the infra-only compose) and compose overrides them via <code>SPRING_*</code> env vars: <code>SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/&lt;db&gt;</code>, <code>SPRING_PULSAR_CLIENT_SERVICE_URL=pulsar://pulsar:6650</code>, <code>SPRING_DATA_REDIS_HOST=redis</code>, <code>MANAGEMENT_OPENTELEMETRY_TRACING_EXPORT_OTLP_ENDPOINT=http://jaeger:4318/v1/traces</code>, plus <code>STOCK_SERVICE_URL=http://stock-service:8081</code> for order-service.</li>
+        <li><em>Spring relaxed binding gotcha.</em> For <code>@Value("${stock-service.url}")</code>, the canonical env-var form is <code>STOCK_SERVICE_URL</code> — Spring's <code>SystemEnvironmentPropertySource</code> tries the name with dots→underscores AND hyphens→underscores. For <code>@ConfigurationProperties</code> relaxed binding, hyphens are <em>stripped</em> instead, which is the opposite. Different code paths, different rules; <code>@Value</code> is the friendly one.</li>
+        <li><em>Healthcheck-gated startup.</em> Each service has a <code>curl -fsS http://localhost:&lt;port&gt;/actuator/health</code> healthcheck with a 30s <code>start_period</code> to absorb JVM warmup before failures count. <code>order-service</code> declares <code>depends_on: stock-service: { condition: service_healthy }</code> so the synchronous <code>POST /api/reserve</code> path can't race startup; both also wait on Postgres / Pulsar / Redis being healthy.</li>
+        <li><em>Why <code>curl</code> in the runtime image.</em> The JRE base has no <code>curl</code>, no <code>wget</code>, no <code>nc</code>. Compose healthchecks and K8s HTTP probes (later) both need <em>something</em> that can hit a URL from inside the container. ~5 MB extra layer for a one-time install; pays for itself the first time a liveness probe is needed.</li>
+      </ul>
+
+      <h4>Step 4.5 — Gotchas worth remembering <span class="status done">done</span></h4>
+      <ul>
+        <li><em>Pulsar volume corruption on unclean shutdown.</em> Killing the stack with <code>Ctrl-C</code> mid-write leaves the BookKeeper ledger files on the <code>pulsar_data</code> volume out of sync with the metadata store. Next <code>compose up</code> floods the logs with <code>ReadLastConfirmedOp ... did not hear success responses</code> and <code>Failed to open ledger N: Error while recovering ledger</code>. Fix: <code>docker compose down -v</code> (the <code>-v</code> wipes named volumes), then <code>up</code>. Habit: always stop with <code>docker compose down</code>, never <code>Ctrl-C + rm</code>; Pulsar needs ~10–15s to drain.</li>
+        <li><em>Boot jar glob safety.</em> Running <code>:&lt;service&gt;:bootJar</code> only (not <code>build</code>) means no <code>-plain.jar</code> is produced, so <code>COPY .../libs/*.jar</code> in the extractor stage matches exactly one file. If <code>build</code> were used instead, the glob would match both and the extractor would either fail or extract the wrong jar silently.</li>
+        <li><em>Cache mounts vs image layers.</em> <code>--mount=type=cache</code> persists across builds but is not part of any image layer. It's how the Gradle home stays warm without inflating the final image; the layer the RUN produces only contains changes to <code>/workspace</code>.</li>
+      </ul>
+    </div>
+    <div class="notes"><strong>Phase 0 closed.</strong> Both services run end-to-end from images against real Postgres + Pulsar + Redis + Jaeger, all in one <code>docker compose up --build</code>. Original plan had raw YAML on <code>kind</code> before Helm; dropped in favour of jumping straight to Helm — theory of raw manifests is already understood, no hands-on pain needed.</div>
+  </section>
+
+  <section class="phase" id="phase-1">
+    <h2>Phase 1 — Helm</h2>
+    <p class="goal">Goal: deploy both services to Docker Desktop Kubernetes via an umbrella Helm chart that pulls in community sub-charts for Postgres, Redis, and Pulsar, plus eventually an observability stack (Prometheus, Grafana, Jaeger, Kiali, Loki). Containerisation already done in Phase 0; this phase is purely the K8s packaging layer.</p>
+
+    <div class="step" id="p1-s1">
+      <h3>Step 1.1 — Umbrella chart skeleton + first-party sub-charts <span class="status done">done</span></h3>
+      <p>Set up the umbrella pattern: one parent chart <code>commerce</code> that owns two local sub-charts (<code>order-service</code>, <code>stock-service</code>) and will pull in remote community charts later. Each sub-chart starts minimal — a single Deployment and Service — and grows as we add ConfigMaps, probes, securityContext, etc.</p>
+      <ul>
+        <li><em>Directory layout.</em> <code>charts/commerce/{Chart.yaml,values.yaml,charts/{order-service,stock-service}/{Chart.yaml,values.yaml,templates/*}}</code>. Local sub-charts live under <code>charts/commerce/charts/</code>; downloaded community charts will land there too as <code>.tgz</code> files.</li>
+        <li><em>Umbrella <code>Chart.yaml</code>.</em> <code>apiVersion: v2</code>, <code>type: application</code>, <code>version: 0.1.0</code>, <code>appVersion: "0.0.1-SNAPSHOT"</code>. The two local sub-charts are listed under <code>dependencies:</code> with <code>repository: "file://./charts/&lt;name&gt;"</code>. Listing them is optional (Helm auto-discovers <code>charts/*</code>) but it enables <code>condition:</code> toggling later.</li>
+        <li><em>Per-sub-chart <code>values.yaml</code>.</em> Defaults for <code>replicaCount</code>, <code>image.repository</code>, <code>image.tag</code> (empty → falls back to <code>Chart.AppVersion</code>), <code>image.pullPolicy: IfNotPresent</code>, <code>service.type: ClusterIP</code>, <code>service.port</code> (8080 for orders, 8081 for stock).</li>
+        <li><em>Umbrella <code>values.yaml</code>.</em> Two kinds of content: <code>global:</code> for keys shared across every sub-chart, and <code>&lt;subchart&gt;:</code> blocks for overrides of that sub-chart's defaults. Both start empty — defaults are sufficient for first render.</li>
+        <li><em><code>_helpers.tpl</code> per sub-chart.</em> Four named templates: <code>&lt;chart&gt;.name</code>, <code>&lt;chart&gt;.fullname</code> (release-qualified, truncated to 63 chars, contains-check to avoid <code>dev-dev-foo</code>), <code>&lt;chart&gt;.selectorLabels</code> (stable subset: <code>name</code> + <code>instance</code>), <code>&lt;chart&gt;.labels</code> (full recommended-labels set: selector + version + managed-by + part-of).</li>
+        <li><em>Deployment template.</em> <code>metadata.name</code> from <code>fullname</code> helper; <code>metadata.labels</code> from <code>labels</code> helper; <code>spec.selector.matchLabels</code> AND <code>spec.template.metadata.labels</code> from <code>selectorLabels</code> helper. Image is <code>"{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"</code>. Container port named <code>http</code> so the Service can reference it by name.</li>
+        <li><em>Service template.</em> Same name + labels helpers; <code>spec.selector</code> uses <code>selectorLabels</code> (must match Deployment); <code>ports[0].targetPort: http</code> references the Deployment's named port instead of repeating the integer.</li>
+        <li><em>Validation.</em> <code>helm template charts/commerce</code> renders four documents (Deployment + Service × 2) with names like <code>release-name-order-service</code> and clean indentation; <code>helm lint charts/commerce</code> reports no issues.</li>
+      </ul>
+      <p><strong>Concepts touched:</strong></p>
+      <ul>
+        <li><em>Umbrella pattern.</em> A parent chart with local sub-charts (in-tree) and remote dependencies (downloaded via <code>helm dependency update</code>). Lets one <code>helm install</code> command bring up the whole app + its infra. Alternative — install each piece as a separate release — works but multiplies the release count and complicates env propagation.</li>
+        <li><em>Values precedence.</em> Sub-chart defaults &lt; umbrella overrides (under <code>&lt;subchart&gt;:</code> block) &lt; CLI <code>-f</code> / <code>--set</code>. The further from the source, the more authoritative. Same shape as Spring's <code>application.yaml</code> defaults vs env-var overrides.</li>
+        <li><em>Helm built-in objects.</em> <code>.Values</code> (merged values), <code>.Chart</code> (Chart.yaml metadata), <code>.Release</code> (per-install info: <code>Release.Name</code>, <code>Release.Namespace</code>, <code>Release.IsUpgrade</code>), <code>.Files</code> (read non-template files), <code>.Capabilities</code> (cluster API discovery). First three used constantly; last two rarely.</li>
+        <li><em>Recommended labels.</em> <code>app.kubernetes.io/{name,instance,version,component,part-of,managed-by}</code>. <code>name</code> + <code>instance</code> are the <strong>stable</strong> subset usable in selectors; <code>version</code> + <code>managed-by</code> change between releases and would break selector immutability if included.</li>
+        <li><em><code>_helpers.tpl</code>.</em> Files starting with <code>_</code> aren't rendered as resources — they only define named templates (<code>define</code>/<code>include</code>). The pattern is universal across the Helm ecosystem; every Bitnami/published chart uses the same helper names so maintainers can navigate any chart immediately.</li>
+        <li><em><code>include</code> vs <code>template</code>.</em> Both invoke a named template, but <code>include</code> returns a string that can be piped through other functions (e.g. <code>| nindent 4</code>), while <code>template</code> writes directly to output and can't be piped. Always use <code>include</code> in practice.</li>
+        <li><em>Whitespace handling.</em> <code>{{- ... -}}</code> trims whitespace before/after the directive; without it, every template line leaves a stray newline because Go's template engine doesn't understand YAML. <code>nindent N</code> prepends a newline and indents every line of helper output by <code>N</code> spaces — the N comes from "indent of the parent key + 2". Mechanical but error-prone the first time.</li>
+        <li><em>Selector immutability.</em> Once a Deployment is created, <code>spec.selector</code> can't be changed. If <code>version</code> were in the selector and got bumped, new pods would carry the new label, the selector would still want the old one, and rollouts would orphan pods. Hence the stable-subset selector helper.</li>
+        <li><em>Image tag fallback.</em> Empty <code>image.tag</code> in values → template uses <code>.Chart.AppVersion</code>. Lets the chart version drive image versions by default; CLI override (<code>--set image.tag=foo</code>) wins when needed.</li>
+        <li><em>Named container ports.</em> Naming the container port (<code>name: http</code>) lets the Service reference it by name (<code>targetPort: http</code>) instead of repeating the integer. Decouples the Service from the literal port number — change the Deployment's <code>containerPort</code> once, Service follows.</li>
+      </ul>
+      <div class="notes"><strong>Gotchas:</strong> <code>helm template</code> with no release name renders the literal string <code>release-name</code> in <code>{{ .Release.Name }}</code>. Pass an explicit name (<code>helm template my-release charts/commerce</code>) when you want a realistic preview. Also: <code>--show-only charts/&lt;subchart&gt;/templates/&lt;file&gt;.yaml</code> filters output to one template when debugging.</div>
+    </div>
+
+    <div class="step" id="p1-s2">
+      <h3>Step 1.2 — First community sub-chart: Postgres <span class="status done">done</span></h3>
+      <p>Replace the compose-only Postgres with the Bitnami <code>postgresql</code> chart pulled in as an umbrella dependency. One Postgres instance, two logical databases (<code>orders</code>, <code>stock</code>) and two users created via the chart's init-script hook — same isolation model as Phase 0 inside the cluster.</p>
+      <ul>
+        <li><em>Umbrella <code>Chart.yaml</code> addition.</em> Third entry under <code>dependencies:</code>: <code>name: postgresql</code>, <code>version: "16.x.x"</code> (semver range — exact version pinned in <code>Chart.lock</code>), <code>repository: "https://charts.bitnami.com/bitnami"</code>, <code>condition: postgresql.enabled</code> (toggle the whole sub-chart off via values when pointing at an external managed DB later).</li>
+        <li><em>Umbrella <code>values.yaml</code> overrides.</em> <code>postgresql.enabled: true</code>, <code>postgresql.image.repository: bitnamilegacy/postgresql</code> (Bitnami's "secure images" rate-limit anonymous pulls since late 2025; the legacy repo is freely fetchable), <code>postgresql.auth.postgresPassword: postgres-admin</code> (plain text fine for the practice cluster — production uses <code>auth.existingSecret</code>), and a multi-line <code>postgresql.primary.initdb.scripts.init.sql</code> that runs once on first boot: <code>CREATE USER orders/stock WITH PASSWORD ...; CREATE DATABASE orders/stock OWNER ...;</code>.</li>
+        <li><em>Dependency update.</em> <code>helm dependency update charts/commerce</code> resolves the version, downloads <code>postgresql-16.x.x.tgz</code> into <code>charts/commerce/charts/</code>, and writes the exact resolved version + SHA into <code>Chart.lock</code>.</li>
+        <li><em>Rendered output expansion.</em> <code>helm template charts/commerce</code> grows from 4 documents (our two services) to ~12 (StatefulSet, headless Service, ClusterIP Service, multiple ConfigMaps including the init-script one, Secret, ServiceAccount, Role, RoleBinding, NetworkPolicy, PDB, optional metrics resources). Verified the init script appears verbatim under a ConfigMap and the image reference is <code>bitnamilegacy/postgresql:...</code>.</li>
+      </ul>
+      <p><strong>Concepts touched:</strong></p>
+      <ul>
+        <li><em>Local vs remote dependencies.</em> Local sub-charts live in <code>charts/commerce/charts/&lt;name&gt;/</code> as directories. Remote sub-charts land in the same directory as <code>.tgz</code> files after <code>dependency update</code>. Helm treats both the same way at render time.</li>
+        <li><em><code>Chart.lock</code>.</em> Pins exact resolved versions + SHA digests of every remote dependency. Same role as <code>package-lock.json</code> or <code>go.sum</code> — reproducible builds across machines. Commit it.</li>
+        <li><em>Semver ranges.</em> <code>16.x.x</code> = "any 16.something". Helm picks the latest match at <code>dependency update</code> time and freezes via the lock file. Production: pin exactly. Learning: range is fine.</li>
+        <li><em>Why so many Bitnami resources for one DB.</em> The chart supports both single-pod dev and N-replica HA installs from the same templates, with security defaults (NetworkPolicy, ServiceAccount + RBAC, restricted PodSecurityContext) and operational extras (PDB, optional Prometheus metrics) gated by <code>if</code> conditions. Most are toggleable via values; the defaults are reasonably feature-on.</li>
+        <li><em>Bitnami secure-images caveat.</em> Late 2025 onward the chart defaults point at rate-limited "Bitnami Secure Images". Anonymous pulls work for the <code>bitnamilegacy/</code> repo; production deployments should mirror to a private registry.</li>
+        <li><em>Two DBs in one Postgres process.</em> Each service owns its own logical database (and user with grants only on that database). Database-per-service principle is satisfied at the logical level without running two Postgres processes. Mirrors the compose setup exactly — only the orchestrator changed.</li>
+        <li><em>StatefulSet vs Deployment recap.</em> Pods are interchangeable (Deployment) vs individuals (StatefulSet). Three drivers force StatefulSet: per-replica persistent storage that must survive reschedule (each replica's disk has identity-tied content like replication WAL position), per-pod stable DNS for clustered peers to find each other, ordered startup/shutdown. Any "yes" → StatefulSet. Postgres ticks all three even at 1 replica because the chart supports scaling to N — keeping one code path is simpler than maintaining two.</li>
+        <li><em>"Multiple processes can't write same data" — distinguishing levels.</em> A single Postgres server process handles many concurrent <em>clients</em> writing rows; that's normal. What fails is <strong>two server processes</strong> pointed at the same data directory — the second one sees <code>postmaster.pid</code> and aborts. Hence horizontal scale via shared PVC is impossible without replication or storage-compute split (Aurora, Neon, AlloyDB).</li>
+        <li><em>Identity preservation, not pod preservation.</em> When <code>postgres-1</code> dies, the StatefulSet brings up a replacement that <em>inherits</em> the name <code>postgres-1</code>, mounts the same PVC <code>data-postgres-1</code>, and gets the same DNS record. The physical pod object is fully replaceable; what's preserved is the <em>identity tuple</em> (name + PVC + DNS). Other peers in the cluster can't tell anything happened.</li>
+      </ul>
+      <div class="notes"><strong>Useful flags:</strong> <code>helm template charts/commerce --show-only charts/order-service/templates/deployment.yaml</code> trims output to one template when the Bitnami noise overwhelms. <code>helm dependency list charts/commerce</code> shows resolved dependency status (<code>ok</code> / <code>missing</code> / <code>unwanted</code>) without re-downloading.</div>
+    </div>
+
+    <div class="step" id="p1-s3">
+      <h3>Step 1.3 — ConfigMaps + env wiring to in-cluster Postgres <span class="status done">done</span></h3>
+      <p>App pods need their connection strings handed to them as env vars (the same shape <code>compose.yaml</code> used). Added a ConfigMap per service that carries every <code>SPRING_*</code> override, then wired it into the Deployment via <code>envFrom</code>. Hostnames default to the in-cluster Postgres Service name and are overridable via values for the external-DB case.</p>
+      <ul>
+        <li><em><code>configmap.yaml</code> per sub-chart.</em> <code>kind: ConfigMap</code> with <code>metadata.name</code> from the <code>fullname</code> helper, <code>data:</code> keyed on uppercase SPRING_* names (relaxed binding). Postgres URL built with <code>printf "%s-postgresql" .Release.Name</code> as the host default when <code>postgresql.host</code> is empty, so the user only sets a value to override (external DB).</li>
+        <li><em>Deployment integration.</em> Added <code>envFrom: - configMapRef: { name: ... }</code> to each container. <code>envFrom</code> dumps every ConfigMap key as an env var with no per-key plumbing — change a key in the ConfigMap, restart the pod, done. Beats listing 10 individual <code>env:</code> entries.</li>
+        <li><em>Sub-chart values gained a <code>postgresql:</code> block.</em> <code>host: ""</code>, <code>port</code>, <code>database</code>, <code>username</code>, <code>password</code>. Empty host = default to <code>&lt;release&gt;-postgresql</code>; non-empty = use that hostname verbatim. Password is plain-text on purpose for now — extracted to a Secret in a later step.</li>
+        <li><em>Validation.</em> <code>helm template dev charts/commerce --show-only charts/order-service/templates/configmap.yaml</code> showed <code>SPRING_DATASOURCE_URL: jdbc:postgresql://dev-postgresql:5432/orders</code> — proving the printf default kicks in. Same shape for stock-service against the <code>stock</code> database.</li>
+      </ul>
+      <p><strong>Concepts touched:</strong></p>
+      <ul>
+        <li><em>ConfigMap.</em> A K8s object storing non-confidential key/value pairs. Can be projected into pods three ways: <code>env</code> (per-key), <code>envFrom</code> (bulk), or as a mounted file. We use <code>envFrom</code> for simplicity — Spring reads env vars without any classpath changes.</li>
+        <li><em>Spring relaxed binding.</em> <code>SPRING_DATASOURCE_URL</code> maps to <code>spring.datasource.url</code> in YAML. The convention is UPPER_SNAKE_CASE → kebab/dot lowercase. Env vars override anything in <code>application.yaml</code>, which is exactly what we want for env-specific config.</li>
+        <li><em>K8s DNS for Services.</em> Every Service gets <code>&lt;name&gt;.&lt;namespace&gt;.svc.cluster.local</code> in CoreDNS. Inside the same namespace, the short name <code>&lt;name&gt;</code> resolves too. Service name is deterministic: <code>&lt;release&gt;-&lt;chart&gt;</code> for our charts and for any well-written community chart. We never invent IPs — we reference these stable names and let CoreDNS resolve.</li>
+        <li><em>Template defaults with <code>printf</code>.</em> Pattern: <code>{{ .Values.foo | default (printf "%s-bar" .Release.Name) }}</code>. Empty string is falsy in Go templates → falls through to the printf. Lets the same chart work for "in-cluster default" and "external override" without duplicating logic.</li>
+        <li><em><code>envFrom</code> vs <code>env</code>.</em> <code>envFrom</code> imports every key; <code>env</code> imports one named key (optionally with a <code>valueFrom</code> indirection). Mix freely: <code>envFrom</code> for bulk config, <code>env</code> for one-off Secret references later (passwords).</li>
+      </ul>
+      <div class="notes"><strong>Why Spring sees env vars at all:</strong> Spring Boot's <code>PropertySource</code> chain pulls from system env by default, ranked above <code>application.yaml</code>. No extra config needed — set <code>SPRING_FOO_BAR</code> in the pod env, <code>spring.foo.bar</code> changes. Same behaviour we exploited in compose.</div>
+    </div>
+
+    <div class="step" id="p1-s4">
+      <h3>Step 1.4 — Second community sub-chart: Redis <span class="status done">done</span></h3>
+      <p>Same Bitnami pull-and-override pattern as Postgres, but with one user and no init script. Standalone topology (no replicas), persistence disabled, auth disabled — matches the <code>--save "" --appendonly no</code> ephemeral cache role from compose. ConfigMaps in both sub-charts gained <code>SPRING_DATA_REDIS_HOST/PORT</code>, host defaulting to <code>&lt;release&gt;-redis-master</code>.</p>
+      <ul>
+        <li><em>Dependency entry.</em> <code>name: redis</code>, <code>version: "20.x.x"</code>, repo <code>https://charts.bitnami.com/bitnami</code>, <code>condition: redis.enabled</code>. <code>helm dependency update charts/commerce</code> drops <code>redis-20.x.x.tgz</code> next to the Postgres tarball and updates <code>Chart.lock</code>.</li>
+        <li><em>Umbrella overrides.</em> <code>redis.enabled: true</code>, <code>redis.image.repository: bitnamilegacy/redis</code> (same secure-images workaround), <code>redis.architecture: standalone</code> (no replicas StatefulSet), <code>redis.auth.enabled: false</code> (still creates the Secret object, just empty), <code>redis.master.persistence.enabled: false</code> (cache can absorb pod restarts in dev).</li>
+        <li><em>ConfigMap extension.</em> Two new lines per sub-chart: <code>SPRING_DATA_REDIS_HOST: "{{ .Values.redis.host | default (printf "%s-redis-master" .Release.Name) }}"</code> and <code>SPRING_DATA_REDIS_PORT: "{{ .Values.redis.port | quote }}"</code>. The <code>-master</code> suffix is Bitnami's role-naming convention (writable replica), not something we picked.</li>
+        <li><em>Validation.</em> Render confirmed three Redis Services (<code>dev-redis-master</code> ClusterIP for clients, <code>dev-redis-headless</code> for StatefulSet pod DNS, and a NetworkPolicy) plus a StatefulSet named <code>dev-redis-master</code> regardless of standalone vs replicated topology.</li>
+      </ul>
+      <p><strong>Concepts touched:</strong></p>
+      <ul>
+        <li><em>Why community charts also use StatefulSet for standalone.</em> Bitnami keeps one templated path that supports scale-up to replicated topology. Single-replica StatefulSet behaves identically to a Deployment for our purposes, with the side-effect that the pod is named <code>...-master-0</code> and gets a headless Service for peer DNS (unused at one replica).</li>
+        <li><em>Auth disabled but Secret still created.</em> The chart templates always emit a Secret resource; <code>auth.enabled: false</code> just leaves the password field empty. Idempotent template, conditional content — common pattern.</li>
+        <li><em>Naming-decoding mental model.</em> <code>&lt;release&gt;-&lt;chart-name&gt;-&lt;role&gt;</code>. <code>release</code> from <code>helm install</code>, <code>chart-name</code> from <code>Chart.yaml</code> in that sub-chart, <code>role</code> from the chart author's templates (Bitnami uses <code>master</code>, <code>replicas</code>, <code>headless</code>, <code>configuration</code>, etc.). Set <code>fullnameOverride</code> on a sub-chart to force a specific prefix.</li>
+        <li><em>Persistence as a knob, not a default.</em> Postgres got persistence (data-of-record); Redis didn't (cache/idempotency markers). Persistence-on means a PVC, which means a StorageClass binding, which means node-local hostpath on Docker Desktop and node-pinning consequences. Default to off for things that can rebuild.</li>
+      </ul>
+      <div class="notes"><strong>Pattern is now repeatable:</strong> add a dependency entry → run <code>helm dependency update</code> → override in umbrella values → extend ConfigMaps with the hostname. Any Bitnami-flavoured chart follows this shape. The interesting work is reading their <code>values.yaml</code> to find the right keys.</div>
+    </div>
+
+    <div class="step" id="p1-s5">
+      <h3>Step 1.5 — First-party Pulsar sub-chart (standalone) <span class="status done">done</span></h3>
+      <p>The official <code>apache/pulsar</code> chart deploys broker + bookkeeper + zookeeper as separate StatefulSets (5+ pods) and wants resource amounts Docker Desktop can't satisfy without aggressive override-by-override fighting. Wrote a minimal first-party sub-chart instead — a single <code>Deployment + Service + PVC</code> running <code>apachepulsar/pulsar:4.0.5</code> in <code>bin/pulsar standalone</code> mode. Mirrors the compose container exactly and exercises chart-authoring (vs. just chart-consuming).</p>
+      <ul>
+        <li><em>Sub-chart layout.</em> <code>charts/commerce/charts/pulsar/{Chart.yaml,values.yaml,templates/{_helpers.tpl,deployment.yaml,service.yaml,pvc.yaml}}</code>. Same helper shape as order/stock so naming follows the <code>&lt;release&gt;-pulsar</code> convention. Local dependency in the umbrella with <code>condition: pulsar.enabled</code>.</li>
+        <li><em>Deployment.</em> <code>replicas: 1</code>, <code>strategy.type: Recreate</code> (RWO PVC can't be held by two pods during a rolling update), <code>args: [bin/pulsar, standalone, --no-functions-worker, --no-stream-storage]</code>, two named container ports (<code>broker</code> 6650, <code>admin</code> 8080), volumeMount of the PVC at <code>/pulsar/data</code>.</li>
+        <li><em>PVC.</em> <code>ReadWriteOnce</code>, default StorageClass (Docker Desktop's <code>hostpath</code> provisioner satisfies this), size <code>1Gi</code>. Conditional on <code>persistence.enabled: true</code> so the same chart can run with <code>emptyDir</code> for throwaway tests.</li>
+        <li><em>Service.</em> Two ports on one Service object — <code>broker</code> for app client connections and <code>admin</code> for the REST API. No port-collision concern with order-service even though both use 8080: each pod has its own network namespace, and clients reach Pulsar via the <code>dev-pulsar:8080</code> DNS name vs. <code>dev-order-service:8080</code>.</li>
+        <li><em>ConfigMap extension.</em> One new line in each app's ConfigMap: <code>SPRING_PULSAR_CLIENT_SERVICE_URL: "pulsar://{{ .Values.pulsar.host | default (printf "%s-pulsar" .Release.Name) }}:{{ .Values.pulsar.port }}"</code>. Same default-with-printf pattern as Postgres/Redis.</li>
+      </ul>
+      <p><strong>Concepts touched:</strong></p>
+      <ul>
+        <li><em>Chart authoring vs. chart consuming.</em> Consuming = pick values, paste under a key in the umbrella. Authoring = write the templates, decide naming, design the values surface so future-you (or umbrella) can override what matters without forking. Different mental skill; this step is the practice.</li>
+        <li><em>Deployment vs. StatefulSet for stateful workloads.</em> Pulsar standalone has state (BookKeeper ledgers + ZK metadata) but only one replica with no peer discovery. A Deployment with a PVC works; Recreate strategy handles the RWO constraint. StatefulSet only buys us stable DNS for the pod (unused at replicas=1) and ordered scale-up (no scaling planned). Deployment wins on simplicity.</li>
+        <li><em>RWO and rolling updates.</em> <code>ReadWriteOnce</code> PVs can only be mounted by one node at a time. Default <code>RollingUpdate</code> tries to bring up a new pod before terminating the old → second pod stuck in ContainerCreating while old one holds the volume. <code>strategy.type: Recreate</code> terminates old before starting new — slower but correct for RWO + single replica.</li>
+        <li><em>Why no overlap with the Apache chart.</em> Apache's chart is production-shaped (HA, separate StatefulSets, JVM tuning, monitoring). For a learning cluster on Docker Desktop, mimicking the compose container is a closer match to the rest of the setup and avoids hiding all the templating in an upstream chart we'd just override into submission.</li>
+        <li><em>PVC + node-locality.</em> Docker Desktop's default <code>hostpath</code> StorageClass writes to a directory on the node. PV gets node-affinity → pod stays pinned to that node forever (relevant when multi-node, irrelevant on Docker Desktop's single-node cluster).</li>
+      </ul>
+      <div class="notes"><strong>What we didn't do:</strong> tune JVM flags, set probes on Pulsar, set resources. Pulsar's image isn't ours; adding container-level <code>securityContext</code> with <code>readOnlyRootFilesystem</code> would require tracing every write the standalone process makes. App-only hardening was the right scope.</div>
+    </div>
+
+    <div class="step" id="p1-s6">
+      <h3>Step 1.6 — Production-shaping the app Deployments <span class="status done">done</span></h3>
+      <p>Three additions to <code>order-service</code> and <code>stock-service</code> Deployments: liveness/readiness/startup probes, resource requests/limits, and pod + container <code>securityContext</code> for non-root, read-only-rootfs, capability-dropped pods. Pulsar/Postgres/Redis left alone — community/first-party infra charts come with their own ideas about hardening; the exercise here is shaping the workloads we own.</p>
+      <ul>
+        <li><em>Probes.</em> Three flavours pointing at Spring Boot Actuator's <code>/actuator/health/{liveness,readiness}</code> endpoints. <code>startupProbe</code> with <code>periodSeconds: 5</code>, <code>failureThreshold: 24</code> = 120s cold-start budget. <code>readinessProbe</code> gates Service traffic (5s period, fail-3 = pod removed from endpoints after ~15s of unreadiness). <code>livenessProbe</code> at 10s period restarts a wedged pod. <code>httpGet: { port: http }</code> uses the named container port from the Deployment so the integer isn't repeated.</li>
+        <li><em>Resources.</em> <code>requests: { cpu: 100m, memory: 256Mi }</code>, <code>limits: { cpu: 500m, memory: 512Mi }</code>. Requests = what the scheduler reserves (and what determines pod QoS class); limits = the cgroup ceiling. JVM heap follows <code>-XX:MaxRAMPercentage=75</code> from the Dockerfile, so heap ≈ 384Mi — leaving 128Mi for metaspace, threads, direct buffers.</li>
+        <li><em>Pod-level <code>securityContext</code>.</em> <code>runAsNonRoot: true</code>, <code>runAsUser/Group: 10001</code> (matching the Dockerfile's <code>spring</code> user), <code>fsGroup: 10001</code> (volume ownership), <code>seccompProfile.type: RuntimeDefault</code>. Inherited by every container, plus future Istio sidecar.</li>
+        <li><em>Container-level <code>securityContext</code>.</em> <code>allowPrivilegeEscalation: false</code>, <code>readOnlyRootFilesystem: true</code>, <code>capabilities.drop: [ALL]</code>. Paired with an <code>emptyDir</code> mounted at <code>/tmp</code> so the JVM/Tomcat can still write temp files — without this, Tomcat's work dir initialisation fails.</li>
+        <li><em>Values surface.</em> Every knob lives in <code>values.yaml</code> under <code>resources</code>, <code>probes</code>, <code>podSecurityContext</code>, <code>containerSecurityContext</code>. Defaults are tight; environments can loosen via <code>values-dev.yaml</code> / <code>values-prod.yaml</code> overrides later.</li>
+      </ul>
+      <p><strong>Concepts touched:</strong></p>
+      <ul>
+        <li><em>Three probe types, three failure modes.</em> Startup: app slow to boot → don't fire liveness yet. Readiness: app temporarily can't serve (waiting on Pulsar) → keep the pod alive but drop it from Service endpoints. Liveness: app permanently wedged → restart the container. Mixing these up causes flapping pods or stuck deploys.</li>
+        <li><em>Named ports as a Helm DRY pattern.</em> Deployment's <code>containerPort</code> is named <code>http</code>; Service uses <code>targetPort: http</code>; probes use <code>port: http</code>. Change the integer in one place, the rest follow. Same idea as Spring's <code>@Value</code> indirection vs. hardcoded constants.</li>
+        <li><em>QoS classes.</em> Pod with requests = limits → <code>Guaranteed</code>. Requests &lt; limits → <code>Burstable</code> (our case). No requests at all → <code>BestEffort</code>. Under memory pressure, kubelet evicts BestEffort first, Burstable next, Guaranteed last. Production workloads almost always want Guaranteed or carefully-sized Burstable.</li>
+        <li><em>Pod vs. container <code>securityContext</code> scope.</em> Pod-level applies to volumes (<code>fsGroup</code>, <code>supplementalGroups</code>) and the pod sandbox + serves as defaults inheritable by every container (<code>runAsUser</code>, <code>seccompProfile</code>). Container-level applies to that container's process (<code>capabilities</code>, <code>readOnlyRootFilesystem</code>) and can override inherited defaults. The split is enforced by which field the K8s API allows where — not a stylistic choice.</li>
+        <li><em>Why <code>readOnlyRootFilesystem</code> matters.</em> A compromised process can't drop a binary in <code>/usr/bin</code>, modify config in <code>/etc</code>, or persist anything across container restarts. Combined with <code>capabilities.drop: [ALL]</code>, the blast radius reduces to: whatever's in <code>/tmp</code> (ephemeral), plus network egress (still possible — restrict via NetworkPolicy later).</li>
+        <li><em>JVM in a container.</em> <code>-XX:+UseContainerSupport</code> (default on modern JDKs) makes the JVM read cgroup limits instead of the host's RAM. <code>-XX:MaxRAMPercentage=75</code> sizes the heap as 75% of the cgroup memory limit. Together: <code>resources.limits.memory</code> becomes the single source of truth for both the container ceiling and the JVM heap.</li>
+        <li><em>Compatibility with Istio later.</em> Istio injects an envoy sidecar into each pod. Pod-level securityContext defaults (non-root, seccomp) flow to the sidecar. A namespace with restricted PSA enforcement (<code>pod-security.kubernetes.io/enforce: restricted</code>) would reject our pods if they ran as root or kept capabilities — already compliant.</li>
+      </ul>
+      <div class="notes"><strong>Heads-up:</strong> <code>failureThreshold: 24</code> on startup gives 120s. Spring Boot 4 cold start with Pulsar/Postgres/Redis health indicators can flirt with that on the first install (no warm caches, image pull cost). If install fails on startup probes, bump <code>probes.startup.failureThreshold</code> to 36 or 48 in values rather than tightening anywhere else.</div>
+    </div>
+  </section>
+
+  <section class="phase" id="phase-2">
+    <h2>Phase 2 — Istio</h2>
+    <p class="goal">Goal: install Istio alongside the Helm-managed apps, enable sidecar injection, enforce mTLS and authorization, route external traffic through an Ingress Gateway, and exercise the full traffic-management feature set.</p>
+    <p class="placeholder">Planned sub-steps: <code>istioctl install</code> (demo profile); namespace injection labels; <code>PeerAuthentication</code> STRICT mTLS; <code>AuthorizationPolicy</code> so only <code>order-service</code>'s ServiceAccount may hit <code>stock-service /reserve</code>; <code>Gateway</code> + <code>VirtualService</code> for <code>POST /orders</code>; static HTML UI served through the gateway; <code>DestinationRule</code> subsets v1 / v2 on stock-service; 90/10 canary traffic split; header-based routing (e.g. <code>x-user: canary</code>); retries + timeouts; fault injection (delay + abort); outlier detection / circuit breaking; end-to-end traces in Jaeger (HTTP hops + Pulsar), Kiali graph.</p>
+  </section>
+
+  <section class="phase" id="phase-3">
+    <h2>Phase 3 — FluxCD</h2>
+    <p class="goal">Goal: GitOps-manage the whole cluster from this repository. Flux becomes the only component that applies changes; everything else reaches the cluster via it.</p>
+    <p class="placeholder">Planned sub-steps: <code>flux bootstrap</code>; <code>GitRepository</code> source; <code>Kustomization</code>s with dependency ordering (Istio before apps); <code>HelmRepository</code> + <code>HelmRelease</code> for the umbrella chart; separate <code>HelmRelease</code>s per env (dev/prod); <code>ImageRepository</code> + <code>ImagePolicy</code> + <code>ImageUpdateAutomation</code> for <code>stock-service</code> (auto-bump tag, Flux commits back); Sealed Secrets for DB passwords and Pulsar credentials; drift-detection demo (manual <code>kubectl edit</code> → Flux reverts); notifications.</p>
+  </section>
+
+  <section class="phase" id="phase-4">
+    <h2>Phase 4 — Integration scenarios</h2>
+    <p class="goal">Goal: end-to-end scenarios that combine all three tools under realistic failure and release conditions.</p>
+    <p class="placeholder">Planned scenarios: progressive canary rollout of <code>stock-service</code> v2 driven by image automation + Istio traffic shift; Postgres password rotation via Sealed Secrets reconciliation; bad <code>schema.sql</code> rollout + rollback via <code>git revert</code>; fault injection driving client-side retry behaviour; optional Phase 5 bonus — replace Sealed Secrets with HashiCorp Vault + External Secrets Operator.</p>
+  </section>
+</main>
+</body>
+</html>

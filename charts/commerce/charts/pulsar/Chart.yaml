@@ -1,0 +1,6 @@
+apiVersion: v2
+name: pulsar
+description: Apache Pulsar in standalone mode (single pod embedding broker + bookkeeper + zookeeper). Matches the compose setup.
+type: application
+version: 0.1.0
+appVersion: "4.0.5"

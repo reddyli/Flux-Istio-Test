@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "order-service.fullname" . }}
+  labels:
+    {{- include "order-service.labels" . | nindent 4 }}
+data:
+  # Keys use Spring's SPRING_* relaxed-binding form so they override the
+  # application.yaml defaults as process env vars. Hostnames default to
+  # the in-cluster service names (<release>-<chart>).
+  SPRING_DATASOURCE_URL: "jdbc:postgresql://{{ .Values.postgresql.host | default (printf "%s-postgresql" .Release.Name) }}:{{ .Values.postgresql.port }}/{{ .Values.postgresql.database }}"
+  SPRING_DATASOURCE_USERNAME: {{ .Values.postgresql.username | quote }}
+  SPRING_DATASOURCE_PASSWORD: {{ .Values.postgresql.password | quote }}
+  STOCK_SERVICE_URL: "http://{{ .Values.stockService.host | default (printf "%s-stock-service" .Release.Name) }}:{{ .Values.stockService.port }}"
+  SPRING_DATA_REDIS_HOST: "{{ .Values.redis.host | default (printf "%s-redis-master" .Release.Name) }}"
+  SPRING_DATA_REDIS_PORT: {{ .Values.redis.port | quote }}
+  SPRING_PULSAR_CLIENT_SERVICE_URL: "pulsar://{{ .Values.pulsar.host | default (printf "%s-pulsar" .Release.Name) }}:{{ .Values.pulsar.port }}"
