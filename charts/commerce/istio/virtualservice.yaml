@@ -1,0 +1,60 @@
+---
+# VirtualService: explicit routing rules for stock-service.
+# Defines traffic policies (e.g., canary split, retries, timeouts).
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: stock-service
+  namespace: app-dev
+spec:
+  # The host this VirtualService matches on.
+  # "stock-service" is shorthand for "stock-service.app-dev.svc.cluster.local"
+  # within the cluster. External traffic uses the Gateway hostname.
+  hosts:
+    - stock-service
+  http:
+    # Route 90% of traffic to v1 (the current production version)
+    - match:
+        - uri:
+            prefix: /
+      route:
+        - destination:
+            host: stock-service
+            port:
+              number: 8081
+            subset: v1
+          weight: 90
+        # Route 10% to v2 (canary version for testing)
+        - destination:
+            host: stock-service
+            port:
+              number: 8081
+            subset: v2
+          weight: 10
+      timeout: 10s         # abort if no response in 10s
+      retries:
+        attempts: 3        # retry up to 3 times on failure
+        perTryTimeout: 2s  # timeout per attempt
+---
+# DestinationRule: defines how traffic is load-balanced across pods,
+# and groups pods into "subsets" (v1, v2) based on labels.
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: stock-service
+  namespace: app-dev
+spec:
+  host: stock-service
+  # Subsets partition the Endpoints based on label selectors.
+  # VirtualService's .destination.subset field references these.
+  subsets:
+    - name: v1
+      labels:
+        version: v1
+    - name: v2
+      labels:
+        version: v2
+  # Load balancing policy (alternatives: RANDOM, LEAST_REQUEST, MAGLEV).
+  trafficPolicy:
+    loadBalancer:
+      simple: ROUND_ROBIN

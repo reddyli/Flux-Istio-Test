@@ -1,6 +1,6 @@
 # Flux + Istio Test Setup
 
-Sandbox to test Flux and istio with a simple multi service setup
+Sandbox to test Flux and istio with a simple multiservice setup
 
 ## Components
 

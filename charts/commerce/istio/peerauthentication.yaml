@@ -1,0 +1,12 @@
+---
+# PeerAuthentication: STRICT mTLS for the app-dev namespace
+# All pod-to-pod traffic must be encrypted. Plaintext traffic is rejected
+# at the destination sidecar. mTLS certs are auto-managed by istiod.
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: strict-mtls
+  namespace: app-dev
+spec:
+  mtls:
+    mode: STRICT

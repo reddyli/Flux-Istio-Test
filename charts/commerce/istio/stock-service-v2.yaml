@@ -1,0 +1,78 @@
+---
+# Manual Deployment for stock-service v2 (canary version).
+# In a real scenario this would be managed by Flux or a separate HelmRelease.
+# For this learning exercise, it's a static manifest to demonstrate Istio traffic splitting.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dev-stock-service-v2
+  namespace: app-dev
+  labels:
+    app.kubernetes.io/name: stock-service
+    app.kubernetes.io/version: v2
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: stock-service
+      version: v2
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: stock-service
+        version: v2
+    spec:
+      containers:
+        - name: stock-service
+          image: stock-service:0.0.1-SNAPSHOT
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8081
+              protocol: TCP
+          env:
+            - name: SPRING_PROFILES_ACTIVE
+              value: "kubernetes"
+            - name: POSTGRES_HOST
+              value: "dev-postgresql"
+            - name: POSTGRES_PORT
+              value: "5432"
+            - name: POSTGRES_DB
+              value: "stock"
+            - name: POSTGRES_USER
+              value: "stock"
+            - name: POSTGRES_PASSWORD
+              value: "stock"
+            - name: REDIS_HOST
+              value: "dev-redis-master"
+            - name: REDIS_PORT
+              value: "6379"
+            - name: PULSAR_HOST
+              value: "dev-pulsar"
+            - name: PULSAR_PORT
+              value: "6650"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: 8081
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: 8081
+            periodSeconds: 5
+            failureThreshold: 3
+          startupProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: 8081
+            periodSeconds: 5
+            failureThreshold: 24

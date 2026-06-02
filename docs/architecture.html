@@ -138,16 +138,33 @@ flowchart LR
     <h2>Locked-in decisions</h2>
     <div class="notes">
       <ul>
-        <li>Single Docker Desktop Kubernetes cluster; two app namespaces (<code>app-dev</code>, <code>app-prod</code>).</li>
+        <li>Single Docker Desktop Kubernetes cluster; two app namespaces (<code>app-dev</code>, <code>app-prod</code>). Only <code>app-dev</code> is built so far.</li>
         <li>One Postgres pod per namespace, two databases (<code>orders</code>, <code>stock</code>), one user each.</li>
-        <li>One Pulsar broker per namespace, single topic <code>orders.created</code>.</li>
+        <li>One Pulsar broker per namespace in <strong>standalone mode</strong> (single container, no separate BookKeeper / ZooKeeper). Single topic <code>orders.created</code>.</li>
         <li>One Redis pod per namespace, used by both services as a cache (stock reads) and an idempotency-key store (<code>POST /api/orders</code> with client-supplied <code>Idempotency-Key</code> header). Lettuce client via Spring Data Redis.</li>
         <li>Two microservices: <code>order-service</code> (HTTP + Pulsar producer + Redis idempotency), <code>stock-service</code> (HTTP + Pulsar consumer + Redis read cache).</li>
+        <li>Deployment shape: a single umbrella Helm chart <code>commerce</code> with one sub-chart per workload (two custom app charts, one custom Pulsar chart, Bitnami <code>postgresql</code> and <code>redis</code> as external sub-charts pinned in <code>Chart.lock</code>).</li>
+        <li>Each app pod runs a <code>wait-for-deps</code> initContainer that TCP-probes Postgres / Redis / Pulsar before the JVM starts, so the pod sits in <code>Init:</code> instead of <code>CrashLoopBackOff</code> when infra is still warming up.</li>
         <li>Observability stack: Prometheus, Grafana, Jaeger, Kiali, Loki (log aggregation, queried from Grafana).</li>
         <li>Ingress through the Istio Gateway. External auth not in scope.</li>
         <li>Secrets: Sealed Secrets for Phases 1&ndash;4; HashiCorp Vault as optional Phase 5.</li>
         <li>UI: single static HTML served from <code>order-service</code>, added in Phase 2 once the gateway is up.</li>
       </ul>
+    </div>
+  </section>
+
+  <section class="diagram">
+    <h2>4. Istio Service Mesh Enforcement (Subphase 2.2)</h2>
+    <p class="caption">Active mesh policies: mandatory mTLS between sidecars (PeerAuthentication: STRICT), explicit routing rules (VirtualService), and traffic splitting for canary testing (DestinationRule subsets). Authorization policy to follow.</p>
+    <div class="notes">
+      <strong>Policies deployed:</strong><br>
+      <ul>
+        <li><code>PeerAuthentication: STRICT</code> — all pod-to-pod traffic must use mTLS. Plaintext is rejected at the destination sidecar.</li>
+        <li><code>VirtualService: stock-service</code> — explicit routing rules for stock-service with timeouts (10s), retries (3 attempts, 2s each), and placeholder for traffic splitting (90% v1 / 10% v2).</li>
+        <li><code>DestinationRule: stock-service</code> — defines subsets (v1, v2) based on pod labels; enables load-balancing policy (ROUND_ROBIN).</li>
+      </ul>
+      <strong>Effect:</strong> Order → Stock traffic is encrypted (mTLS) and routed through Envoy with explicit policies (no more implicit Kubernetes DNS). Ready for canary deployments and traffic shifting.<br>
+      <strong>Next:</strong> Deploy stock-service v2, then commit a VirtualService update to shift 10% → v2 and observe traffic distribution in Kiali (Phase 3).
     </div>
   </section>
 </main>
