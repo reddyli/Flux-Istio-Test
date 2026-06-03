@@ -40,3 +40,5 @@ out/
 # Subchart archives produced by `helm dependency build/update`.
 # Chart.lock is the source of truth; tgzs are regenerated artifacts.
 charts/*/charts/*.tgz
+docs/learning-log.html
+docs/OBSERVABILITY_QUICK_START.md
