@@ -1,0 +1,43 @@
+---
+# Namespace where the commerce release lives.
+# Flux will ensure this namespace exists before installing the chart.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: app-dev
+  labels:
+    istio-injection: enabled
+---
+# HelmRelease: Flux's equivalent of `helm install`.
+# helm-controller watches this resource and reconciles the actual Helm
+# release in the cluster to match this spec.
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: commerce
+  namespace: app-dev
+spec:
+  # How often Flux re-checks that the release matches this spec.
+  # Even without git changes, Flux will detect manual drift on this cadence.
+  interval: 5m
+
+  # Name shown by `helm list`. Must match the existing release name
+  # so Flux adopts it instead of trying to install a second copy.
+  releaseName: dev
+
+  # Where to find the chart.
+  chart:
+    spec:
+      # Path inside the GitRepository (relative to its root).
+      chart: ./charts/commerce
+      # Reuse the GitRepository created by `flux bootstrap`.
+      sourceRef:
+        kind: GitRepository
+        name: flux-system
+        namespace: flux-system
+      # Re-resolve the chart from git on this cadence.
+      interval: 1m
+
+  # Values overrides. Empty for now — we use the chart's defaults.
+  # Anything added here behaves like `-f values.yaml` on `helm install`.
+  values: {}
