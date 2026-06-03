@@ -37,9 +37,8 @@ out/
 .vscode/
 
 ### Helm ###
-# Subchart archives produced by `helm dependency build/update`.
-# Chart.lock is the source of truth; tgzs are regenerated artifacts.
-charts/*/charts/*.tgz
+# Subchart archives are committed so Flux's source-controller can render
+# the chart without re-resolving remote dependencies on every sync.
 docs/learning-log.html
 docs/OBSERVABILITY_QUICK_START.md
 docs/architecture.html
