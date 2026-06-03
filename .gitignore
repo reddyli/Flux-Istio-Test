@@ -42,3 +42,4 @@ out/
 charts/*/charts/*.tgz
 docs/learning-log.html
 docs/OBSERVABILITY_QUICK_START.md
+docs/architecture.html
