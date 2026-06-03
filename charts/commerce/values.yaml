@@ -20,10 +20,10 @@ global: {}
 # Sub-chart overrides for our first-party services. Defaults in each
 # sub-chart's own values.yaml are fine for now; uncomment when you need
 # to deviate.
-#
-# order-service:
-#   replicaCount: 2
-#
+
+order-service:
+  replicaCount: 2
+
 # stock-service:
 #   replicaCount: 1
 
