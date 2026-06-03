@@ -1,0 +1,13 @@
+---
+# Telemetry: Configure sidecars to send traces to Jaeger and metrics to Prometheus
+apiVersion: telemetry.istio.io/v1alpha1
+kind: Telemetry
+metadata:
+  name: custom-tracing
+  namespace: istio-system
+spec:
+  tracing:
+    - providers:
+        - name: jaeger
+      randomSamplingPercentage: 100.0
+      # 100% sampling = trace every request (fine for dev, dial down for production)

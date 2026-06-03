@@ -549,15 +549,106 @@ curl -s http://localhost:8083/admin/v2/clusters     # Pulsar admin reachable</pr
   </section>
 
   <section class="phase" id="phase-3">
-    <h2>Phase 3 — FluxCD</h2>
+    <h2>Phase 3 — Observability <span class="status done">done</span></h2>
+    <p class="goal">Goal: Install and integrate the Istio observability stack (Kiali, Jaeger, Prometheus, Grafana) to visualize service mesh traffic, trace requests end-to-end, and monitor RED metrics (Rate, Error rate, Duration).</p>
+    <div class="step">
+      <h3>Kiali installation and mesh topology visualization <span class="status done">done</span></h3>
+      <ul>
+        <li>Downloaded Kiali manifest from Istio samples and deployed to <code>istio-system</code> namespace.</li>
+        <li>Port-forwarded <code>kiali:2000 → localhost:20001</code> to access the web UI.</li>
+        <li>Verified <strong>Graph</strong> view in <code>app-dev</code> namespace shows:
+          <ul>
+            <li>order-service and stock-service pods as nodes</li>
+            <li>Arrows representing live traffic between services</li>
+            <li>Green padlocks on arrows indicating mTLS encryption (PeerAuthentication STRICT in action)</li>
+            <li>Traffic split indicator: 90% v1, 10% v2 (from VirtualService)</li>
+            <li>Hover metrics: req/s, error %, p50/p95/p99 latency</li>
+          </ul>
+        </li>
+        <li>Arrow colors: <strong>Green</strong> = healthy (2xx), <strong>Red</strong> = errors (4xx/5xx). Both show mesh is working; color reflects app-layer health.</li>
+      </ul>
+      <div class="notes"><strong>Key insight:</strong> Kiali is Istio-native (only works with Istio). It queries Prometheus for metrics and shows real-time mesh topology with policy overlays (VirtualService routes, DestinationRule subsets, mTLS locks). No other service mesh (Linkerd, Consul) has equivalent built-in visualizer.</div>
+    </div>
+    <div class="step">
+      <h3>Jaeger distributed tracing <span class="status done">done</span></h3>
+      <ul>
+        <li>Deployed Jaeger v2.14.0 from Istio samples to <code>istio-system</code> namespace. Receivers: OTLP gRPC (4317), OTLP HTTP (4318), Jaeger Binary Thrift (6831/6832), HTTP (14268), gRPC (14250).</li>
+        <li>Port-forwarded Jaeger query UI: <code>16686 → localhost:16686</code>.</li>
+        <li>Created <code>Telemetry</code> resource at <code>charts/commerce/istio/telemetry.yaml</code> to configure Istio control plane (istiod) to instruct Envoy sidecars to send traces to Jaeger with 100% sampling (all requests, not sampled).</li>
+        <li>Verified Jaeger receives traces: each request appears as a <strong>trace</strong> (unique ID) containing multiple <strong>spans</strong> (individual operations):
+          <ul>
+            <li><strong>Span:</strong> One operation (e.g., "POST /api/orders", "TLS handshake", "SELECT * FROM stock"), with start time, duration, tags, status.</li>
+            <li><strong>Trace:</strong> Full timeline of a single request from ingress to response; collection of spans with parent-child relationships.</li>
+            <li>Example trace breakdown: order app span → order Envoy span (TLS encryption overhead ~3-5ms) → network latency span (~1ms) → stock Envoy span (TLS decryption) → stock app span (business logic ~45ms). Total: ~60ms, most spent in app code.</li>
+          </ul>
+        </li>
+        <li>Traces show mTLS overhead is minimal (3-5ms per hop) compared to app processing time.</li>
+      </ul>
+      <div class="notes"><strong>Difference from Prometheus:</strong> Prometheus = aggregated metrics (rate, latency buckets, error %). Jaeger = individual request timelines (see where time goes, TLS vs app vs network vs DB).</div>
+    </div>
+    <div class="step">
+      <h3>Prometheus and Grafana metrics dashboards <span class="status done">done</span></h3>
+      <ul>
+        <li>Deployed Prometheus and Grafana from Istio samples. Prometheus scrapes Envoy sidecars (port 15000) every 15 seconds, storing time-series metrics (envoy_http_requests_total, envoy_http_request_duration_milliseconds, etc.).</li>
+        <li>Port-forwarded Prometheus: <code>9090 → localhost:9090</code>, Grafana: <code>3000 → localhost:3000</code> (login: admin/admin).</li>
+        <li>In Grafana, opened pre-built <strong>Istio Service Dashboard</strong> and selected namespace <code>app-dev</code>, service <code>order-service</code>. Observed:
+          <ul>
+            <li><strong>Request Volume:</strong> line graph showing requests/sec over time (increases when sending traffic, drops when idle).</li>
+            <li><strong>Request Duration:</strong> stacked areas for p50, p95, p99 latencies.</li>
+            <li><strong>Request Success Rate:</strong> percentage of non-5xx responses (100% for healthy requests, 0% for pure errors).</li>
+            <li><strong>TCP Connections:</strong> bytes sent/received by the service.</li>
+          </ul>
+        </li>
+        <li>Switched service dropdown to <code>stock-service</code> to see its inbound traffic (called by order-service) and same RED metrics from the callee's perspective.</li>
+      </ul>
+      <div class="notes"><strong>RED vs metrics:</strong> RED = Rate (requests/sec), Errors (error %), Duration (latency). Core SLO metrics. Prometheus stores raw time-series; Grafana visualizes them as dashboards. Generic tools (work with any exporter, not Istio-specific).</div>
+    </div>
+    <div class="step">
+      <h3>Live traffic generation and observation <span class="status done">done</span></h3>
+      <ul>
+        <li>Port-forwarded order-service to <code>localhost:9999</code> using <code>kubectl port-forward -n app-dev svc/dev-order-service 9999:8080</code>.</li>
+        <li>Sent <strong>GET /api/orders</strong> requests (read-only, queries Postgres) and observed in Kiali:
+          <ul>
+            <li>Arrow from order-service to dev-postgresql appearing with live metrics.</li>
+            <li>Requests/sec updating in real-time as traffic flows.</li>
+          </ul>
+        </li>
+        <li>Sent <strong>POST /api/orders</strong> requests with valid SKU (<code>SKU-1</code>, <code>SKU-2</code>) and invalid SKU (<code>SKU-LIVE</code>):
+          <ul>
+            <li>Valid SKU: order-service successfully calls stock-service reserve endpoint, returns 200. Arrow is <strong>green</strong>.</li>
+            <li>Invalid SKU: stock-service returns 404 (UnknownSkuException), order marked REJECTED. Arrow is <strong>red</strong> (app error, not mesh error).</li>
+            <li>Both cases show traffic flowing correctly; color reflects app-layer health, not mesh health.</li>
+          </ul>
+        </li>
+        <li>Available products seeded in stock-service database via <code>data.sql</code>:
+          <ul>
+            <li><code>SKU-1</code>: 100 qty</li>
+            <li><code>SKU-2</code>: 50 qty</li>
+            <li><code>SKU-3</code>: 0 qty (will fail with InsufficientStockException if ordered)</li>
+          </ul>
+        </li>
+      </ul>
+    </div>
+    <div class="step">
+      <h3>Documentation and reference <span class="status done">done</span></h3>
+      <ul>
+        <li>Created <code>docs/OBSERVABILITY_QUICK_START.md</code> with quick reference for Kiali, Grafana, Jaeger URLs, how to read each tool's output, and troubleshooting steps.</li>
+        <li>Committed <code>telemetry.yaml</code> with message: "Configure trace sampling: enable Jaeger tracing for all requests (100% sampling)".</li>
+      </ul>
+    </div>
+    <div class="notes"><strong>Phase 3 complete:</strong> The observability stack is now integrated into the mesh. You can visualize traffic topology (Kiali), understand latency breakdown (Jaeger), and monitor SLO metrics (Grafana). All three tools are live and receiving data from the mesh sidecars via Istio's telemetry config.</div>
+  </section>
+
+  <section class="phase" id="phase-4">
+    <h2>Phase 4 — FluxCD (GitOps)</h2>
     <p class="goal">Goal: GitOps-manage the whole cluster from this repository. Flux becomes the only component that applies changes; everything else reaches the cluster via it.</p>
     <p class="placeholder">Planned sub-steps: <code>flux bootstrap</code>; <code>GitRepository</code> source; <code>Kustomization</code>s with dependency ordering (Istio before apps); <code>HelmRepository</code> + <code>HelmRelease</code> for the umbrella chart; separate <code>HelmRelease</code>s per env (dev/prod); <code>ImageRepository</code> + <code>ImagePolicy</code> + <code>ImageUpdateAutomation</code> for <code>stock-service</code> (auto-bump tag, Flux commits back); Sealed Secrets for DB passwords and Pulsar credentials; drift-detection demo (manual <code>kubectl edit</code> → Flux reverts); notifications.</p>
   </section>
 
-  <section class="phase" id="phase-4">
-    <h2>Phase 4 — Integration scenarios</h2>
-    <p class="goal">Goal: end-to-end scenarios that combine all three tools under realistic failure and release conditions.</p>
-    <p class="placeholder">Planned scenarios: progressive canary rollout of <code>stock-service</code> v2 driven by image automation + Istio traffic shift; Postgres password rotation via Sealed Secrets reconciliation; bad <code>schema.sql</code> rollout + rollback via <code>git revert</code>; fault injection driving client-side retry behaviour; optional Phase 5 bonus — replace Sealed Secrets with HashiCorp Vault + External Secrets Operator.</p>
+  <section class="phase" id="phase-5">
+    <h2>Phase 5 — Integration scenarios</h2>
+    <p class="goal">Goal: end-to-end scenarios that combine all tools under realistic failure and release conditions.</p>
+    <p class="placeholder">Planned scenarios: progressive canary rollout of <code>stock-service</code> v2 driven by image automation + Istio traffic shift; Postgres password rotation via Sealed Secrets reconciliation; bad <code>schema.sql</code> rollout + rollback via <code>git revert</code>; fault injection driving client-side retry behaviour; optional bonus — replace Sealed Secrets with HashiCorp Vault + External Secrets Operator.</p>
   </section>
 </main>
 </body>
